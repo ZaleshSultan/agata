@@ -11,7 +11,7 @@
 import logging
 import sys
 
-import agent
+from agent import Agent
 import config
 import stt
 import tts
@@ -35,6 +35,8 @@ def main() -> None:
     print("  Нажмите Ctrl+C для выхода.")
     print("=" * 60)
     print()
+
+    agent = Agent()
 
     while True:
         try:

@@ -2,8 +2,8 @@
 Agent loop Агаты.
 
 Центральная логика: получает текст пользователя, подаёт в LLM
-с рабочей памятью и инструментами, обрабатывает tool calls в цикле,
-возвращает финальный текстовый ответ.
+с рабочей памятью, короткой историей диалога и инструментами,
+обрабатывает tool calls в цикле, возвращает финальный текстовый ответ.
 
 Принцип: LLM сама решает, какой инструмент вызвать — никакого
 жёсткого if/else роутинга.
@@ -21,19 +21,6 @@ from tools import get_tool_schemas, execute_tool, requires_confirmation
 logger = logging.getLogger(__name__)
 
 # ── Системный промпт ─────────────────────────────────────────────────────
-
-# ── Замени блок SYSTEM_PROMPT в agent.py на этот ────────────────────────────
-#
-# ПРИЧИНА ПРАВКИ:
-# Ollama API-параметр "system" в /api/chat ПЕРЕЗАПИСЫВАЕТ SYSTEM из Modelfile,
-# а не дополняет его. Поэтому персонаж Агаты, заданный в Modelfile, полностью
-# исчезал при каждом вызове agent.run() — оставались только функциональные
-# правила. Решение: держать текст персонажа прямо в коде, одним источником
-# правды, вместо того чтобы полагаться на Modelfile во время рантайма.
-#
-# Modelfile при этом не бесполезен — он всё ещё нужен для быстрого
-# интерактивного тестирования через `ollama run agata` в консоли.
-# Но REAL system prompt для приложения теперь живёт здесь.
 
 SYSTEM_PROMPT: str = f"""Тебя зовут {config.ASSISTANT_NAME}. Ты — персональный голосовой ассистент пользователя, с характером, а не просто исполнитель команд.
 
@@ -88,149 +75,135 @@ SYSTEM_PROMPT: str = f"""Тебя зовут {config.ASSISTANT_NAME}. Ты — �
   Агата: "Чёрт. Ладно, без паники — разбираемся по шагам." (критическая ситуация)
 """
 
-# Singleton LLM-клиент
-_llm: LocalLLM | None = None
+# Сколько последних пар (user, assistant) хранить в сессионной истории.
+# Больше — лучше помнит контекст разговора, но длиннее промпт → медленнее
+# инференс на слабом железе. 6-8 пар — разумный баланс для голосового
+# ассистента реального времени.
+MAX_HISTORY_TURNS: int = 8
 
 
-def _get_llm() -> LocalLLM:
-    """Получить или создать экземпляр LLM-клиента."""
-    global _llm
-    if _llm is None:
-        _llm = LocalLLM()
-    return _llm
-
-
-def _ask_confirmation(tool_name: str, arguments: dict) -> bool:
+class Agent:
     """
-    Спросить у пользователя подтверждение перед выполнением инструмента.
+    Агент с сессионной памятью диалога.
 
-    Args:
-        tool_name: Имя инструмента.
-        arguments: Аргументы вызова.
-
-    Returns:
-        True, если пользователь подтвердил.
+    Один экземпляр Agent живёт всё время работы main.py — history
+    накапливается между вызовами run() и обнуляется при перезапуске
+    программы (это ожидаемо: это "оперативная" память разговора,
+    не долгосрочная).
     """
-    args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
-    print(f"\n⚠️  {config.ASSISTANT_NAME} хочет выполнить: {tool_name}")
-    print(f"   Аргументы: {args_str}")
-    try:
-        answer = input("   Выполнить? [y/n]: ").strip().lower()
-    except EOFError:
-        return False
-    return answer in ("y", "yes", "д", "да")
 
+    def __init__(self) -> None:
+        self._llm: LocalLLM | None = None
+        # Короткая история диалога: только чистые пары user/assistant,
+        # БЕЗ внутренних tool_calls шагов — они нужны только внутри
+        # одного agent loop, не в долгой истории.
+        self.history: list[dict[str, Any]] = []
 
-def run(user_text: str) -> str:
-    """
-    Выполнить один цикл агента: от текста пользователя до финального ответа.
+    def _get_llm(self) -> LocalLLM:
+        if self._llm is None:
+            self._llm = LocalLLM()
+        return self._llm
 
-    Agent loop:
-    1. Читает рабочую память.
-    2. Формирует messages с системным промптом + working memory + user text.
-    3. В цикле до MAX_AGENT_STEPS:
-       - Отправляет в LLM с инструментами.
-       - Если text — возвращает.
-       - Если tool_call — выполняет инструмент, добавляет результат в историю.
-    4. Если шаги исчерпаны — возвращает сообщение об ошибке.
-
-    Args:
-        user_text: Текст пользователя (из STT или консоли).
-
-    Returns:
-        Текстовый ответ Агаты.
-    """
-    llm = _get_llm()
-
-    # 1. Читаем рабочую память
-    working_mem = working_memory.read()
-
-    # 2. Формируем начальные messages
-    system_content = (
-        SYSTEM_PROMPT
-        + f"\n\n<working_memory>\n{working_mem}\n</working_memory>"
-    )
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_text},
-    ]
-
-    # 3. Получаем schemas инструментов
-    tool_schemas = get_tool_schemas()
-
-    # 4. Agent loop
-    for step in range(config.MAX_AGENT_STEPS):
-        logger.info("Agent step %d/%d", step + 1, config.MAX_AGENT_STEPS)
-
+    def _ask_confirmation(self, tool_name: str, arguments: dict) -> bool:
+        args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
+        print(f"\n⚠️  {config.ASSISTANT_NAME} хочет выполнить: {tool_name}")
+        print(f"   Аргументы: {args_str}")
         try:
-            response = llm.chat(messages, tools=tool_schemas)
-        except OllamaUnavailableError as exc:
-            logger.error("Ollama недоступна: %s", exc)
-            return f"Извини, не могу связаться с Ollama: {exc}"
-        except ToolCallParseError as exc:
-            # Битый tool call — пробуем получить текстовый ответ без инструментов
-            logger.warning("Битый tool call, пробую без инструментов: %s", exc)
+            answer = input("   Выполнить? [y/n]: ").strip().lower()
+        except EOFError:
+            return False
+        return answer in ("y", "yes", "д", "да")
+
+    def reset_history(self) -> None:
+        """Явно очистить сессионную историю (например, по голосовой команде
+        'забудь этот разговор' — можно завести под это отдельный intent позже)."""
+        self.history.clear()
+        logger.info("Сессионная история диалога очищена.")
+
+    def run(self, user_text: str) -> str:
+        """
+        Выполнить один цикл агента: от текста пользователя до финального ответа.
+
+        Теперь messages строятся как:
+        system + working_memory  →  self.history (последние N пар)  →  текущая реплика
+
+        Внутренние tool-call шаги текущего запроса живут только в локальной
+        messages этого вызова и НЕ попадают в self.history — туда попадает
+        только финальный чистый обмен репликами.
+        """
+        llm = self._get_llm()
+
+        working_mem = working_memory.read()
+        system_content = (
+            SYSTEM_PROMPT
+            + f"\n\n<working_memory>\n{working_mem}\n</working_memory>"
+        )
+
+        # ── Собираем messages: system + история диалога + текущая реплика ──
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+        messages.extend(self.history)  # прошлые чистые пары user/assistant
+        messages.append({"role": "user", "content": user_text})
+
+        tool_schemas = get_tool_schemas()
+        final_content: str | None = None
+
+        for step in range(config.MAX_AGENT_STEPS):
+            logger.info("Agent step %d/%d", step + 1, config.MAX_AGENT_STEPS)
+
             try:
-                response = llm.chat(messages, tools=None)
-            except OllamaUnavailableError as inner_exc:
-                return f"Извини, не могу связаться с Ollama: {inner_exc}"
+                response = llm.chat(messages, tools=tool_schemas)
+            except OllamaUnavailableError as exc:
+                logger.error("Ollama недоступна: %s", exc)
+                return f"Извини, не могу связаться с Ollama: {exc}"
+            except ToolCallParseError as exc:
+                logger.warning("Битый tool call, пробую без инструментов: %s", exc)
+                try:
+                    response = llm.chat(messages, tools=None)
+                except OllamaUnavailableError as inner_exc:
+                    return f"Извини, не могу связаться с Ollama: {inner_exc}"
 
-        # ── Текстовый ответ — конец цикла ─────────────────────────
-        if response["type"] == "text":
-            content = response["content"]
-            if not content:
-                content = "Хм, у меня нет ответа на это."
-            return content
+            if response["type"] == "text":
+                final_content = response["content"] or "Хм, у меня нет ответа на это."
+                break
 
-        # ── Tool call ─────────────────────────────────────────────
-        tool_name: str = response["name"]
-        tool_args: dict = response["arguments"]
-        logger.info("Tool call: %s(%s)", tool_name, json.dumps(tool_args, ensure_ascii=False)[:200])
+            tool_name: str = response["name"]
+            tool_args: dict = response["arguments"]
+            logger.info("Tool call: %s(%s)", tool_name, json.dumps(tool_args, ensure_ascii=False)[:200])
 
-        # Подтверждение, если требуется
-        if requires_confirmation(tool_name):
-            if not _ask_confirmation(tool_name, tool_args):
-                # Пользователь отказался — сообщаем модели
-                messages.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "function": {
-                            "name": tool_name,
-                            "arguments": tool_args,
-                        }
-                    }],
-                })
-                messages.append({
-                    "role": "tool",
-                    "content": f"Пользователь отказался выполнять {tool_name}.",
-                })
-                continue
+            if requires_confirmation(tool_name):
+                if not self._ask_confirmation(tool_name, tool_args):
+                    messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"function": {"name": tool_name, "arguments": tool_args}}],
+                    })
+                    messages.append({"role": "tool", "content": f"Пользователь отказался выполнять {tool_name}."})
+                    continue
 
-        # Выполняем инструмент
-        tool_result = execute_tool(tool_name, tool_args)
-        logger.info("Результат %s: %s", tool_name, tool_result[:200])
+            tool_result = execute_tool(tool_name, tool_args)
+            logger.info("Результат %s: %s", tool_name, tool_result[:200])
 
-        # Добавляем в историю в формате tool calling
-        # ВАЖНО: role="assistant" с tool_calls + role="tool" с результатом
-        messages.append({
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "function": {
-                    "name": tool_name,
-                    "arguments": tool_args,
-                }
-            }],
-        })
-        messages.append({
-            "role": "tool",
-            "content": tool_result,
-        })
+            messages.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": tool_name, "arguments": tool_args}}],
+            })
+            messages.append({"role": "tool", "content": tool_result})
 
-    # 5. Шаги исчерпаны
-    logger.warning("Превышен лимит шагов агента (%d)", config.MAX_AGENT_STEPS)
-    return (
-        f"Извини, я превысила лимит в {config.MAX_AGENT_STEPS} шагов "
-        "и не смогла завершить задачу. Попробуй сформулировать проще."
-    )
+        if final_content is None:
+            logger.warning("Превышен лимит шагов агента (%d)", config.MAX_AGENT_STEPS)
+            final_content = (
+                f"Извини, я превысила лимит в {config.MAX_AGENT_STEPS} шагов "
+                "и не смогла завершить задачу. Попробуй сформулировать проще."
+            )
+
+        # ── Сохраняем ЧИСТУЮ пару в сессионную историю (без tool-шагов) ──
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": final_content})
+
+        # Обрезаем историю до последних MAX_HISTORY_TURNS пар (по 2 сообщения на пару)
+        max_messages = MAX_HISTORY_TURNS * 2
+        if len(self.history) > max_messages:
+            self.history = self.history[-max_messages:]
+
+        return final_content

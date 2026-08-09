@@ -52,3 +52,4 @@ SYSTEM """
 """
 
 PARAMETER temperature 0.75
+PARAMETER num_ctx 8192

@@ -19,6 +19,8 @@ from tools import calc
 from tools import datetime_tool
 from tools import memory as memory_tools
 from tools import reminder
+from tools import system_control
+from tools import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,38 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "schema": reminder.LIST_REMINDERS_DEFINITION,
         "requires_confirmation": reminder.LIST_REMINDERS_DEFINITION["requires_confirmation"],
     },
+    # Веб-поиск
+    "web_search": {
+        "function": web_search.web_search,
+        "schema": web_search.TOOL_DEFINITION,
+        "requires_confirmation": web_search.TOOL_DEFINITION["requires_confirmation"],
+    },
+    # Системный контроль — браузер
+    "open_browser": {
+        "function": system_control.open_browser,
+        "schema": system_control.OPEN_BROWSER_DEFINITION,
+        "requires_confirmation": system_control.OPEN_BROWSER_DEFINITION["requires_confirmation"],
+    },
+    # Системный контроль — приложение из белого списка
+    "open_app": {
+        "function": system_control.open_app,
+        "schema": system_control.OPEN_APP_DEFINITION,
+        "requires_confirmation": system_control.OPEN_APP_DEFINITION["requires_confirmation"],
+    },
+    # Системный контроль — список съёмных дисков
+    "list_removable_drives": {
+        "function": lambda **_: system_control.list_removable_drives(),
+        "schema": system_control.LIST_REMOVABLE_DRIVES_DEFINITION,
+        "requires_confirmation": system_control.LIST_REMOVABLE_DRIVES_DEFINITION["requires_confirmation"],
+    },
+    # Системный контроль — копирование снимка проекта
+    "copy_project_snapshot": {
+        "function": system_control.copy_project_snapshot,
+        "schema": system_control.COPY_PROJECT_SNAPSHOT_DEFINITION,
+        "requires_confirmation": system_control.COPY_PROJECT_SNAPSHOT_DEFINITION["requires_confirmation"],
+    },
 }
+
 
 
 def get_tool_schemas() -> list[dict]:

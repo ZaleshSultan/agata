@@ -74,6 +74,7 @@ class LocalLLM:
             "stream": False,
             "think": think if think is not None else config.ENABLE_THINKING,
         }
+        logger.info("Отправка запроса с think=%s", payload.get("think"))
         if tools:
             payload["tools"] = tools
 

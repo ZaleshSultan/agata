@@ -26,6 +26,12 @@ WORKING_MEMORY_PATH: Path = DATA_DIR / "working_memory.md"
 # ── Agent loop ─────────────────────────────────────────────────────────────
 MAX_AGENT_STEPS: int = 5                        # Макс. итераций tool-calling за один запрос
 
+# ── Thinking / Рассуждения ────────────────────────────────────────────────
+ENABLE_ADAPTIVE_THINKING: bool = True  # модель сама решает think true/false на каждый запрос
+# Используется только если ENABLE_ADAPTIVE_THINKING = True.
+# Если False — используется статичный ENABLE_THINKING как раньше.
+ENABLE_THINKING: bool = False  # fallback-значение, если адаптивный режим выключен/не сработал
+
 # ── STT (faster-whisper) ───────────────────────────────────────────────────
 WHISPER_MODEL_SIZE: str = "small"               # tiny / base / small / medium / large-v3
 WHISPER_DEVICE: str = "cuda"                    # "cuda" для RTX 4050, "cpu" как fallback

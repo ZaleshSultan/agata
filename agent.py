@@ -120,6 +120,47 @@ class Agent:
         self.history.clear()
         logger.info("Сессионная история диалога очищена.")
 
+    def _decide_thinking(self, user_text: str) -> bool:
+        """
+        Быстрый предварительный запрос: пусть модель сама решит, нужен ли
+        ей thinking-режим для этого конкретного запроса пользователя.
+
+        Всегда вызывается БЕЗ thinking (чтобы сама классификация была быстрой) —
+        иначе теряется весь смысл оптимизации.
+
+        При любой ошибке или неоднозначном ответе — безопасный fallback на
+        config.ENABLE_THINKING (по умолчанию False, то есть быстрый режим).
+        """
+        if not config.ENABLE_ADAPTIVE_THINKING:
+            return config.ENABLE_THINKING
+
+        classify_prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты классифицируешь сложность запроса пользователя для голосового "
+                    "ассистента. Ответь СТРОГО одним словом: 'ДА', если запрос требует "
+                    "многошагового рассуждения, сравнения, планирования, сложных вычислений "
+                    "или неочевидной логики. Ответь 'НЕТ', если это простая команда, факт, "
+                    "бытовой вопрос, вызов известного инструмента (открыть приложение, "
+                    "напоминание, простой вопрос, поиск в интернете). При сомнении — 'НЕТ'."
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ]
+
+        try:
+            llm = self._get_llm()
+            # ВАЖНО: классификационный вызов всегда БЕЗ thinking, иначе теряем смысл
+            response = llm.chat(classify_prompt, tools=None, think=False)
+            answer = response.get("content", "").strip().upper()
+            needs_thinking = answer.startswith("ДА")
+            logger.info("Adaptive thinking: запрос классифицирован как %s", "СЛОЖНЫЙ" if needs_thinking else "ПРОСТОЙ")
+            return needs_thinking
+        except Exception as exc:
+            logger.warning("Ошибка классификации сложности запроса, fallback на быстрый режим: %s", exc)
+            return False
+
     def run(self, user_text: str) -> str:
         """
         Выполнить один цикл агента: от текста пользователя до финального ответа.
@@ -132,6 +173,7 @@ class Agent:
         только финальный чистый обмен репликами.
         """
         llm = self._get_llm()
+        use_thinking = self._decide_thinking(user_text)
 
         working_mem = working_memory.read()
         system_content = (
@@ -151,14 +193,14 @@ class Agent:
             logger.info("Agent step %d/%d", step + 1, config.MAX_AGENT_STEPS)
 
             try:
-                response = llm.chat(messages, tools=tool_schemas)
+                response = llm.chat(messages, tools=tool_schemas, think=use_thinking)
             except OllamaUnavailableError as exc:
                 logger.error("Ollama недоступна: %s", exc)
                 return f"Извини, не могу связаться с Ollama: {exc}"
             except ToolCallParseError as exc:
                 logger.warning("Битый tool call, пробую без инструментов: %s", exc)
                 try:
-                    response = llm.chat(messages, tools=None)
+                    response = llm.chat(messages, tools=None, think=use_thinking)
                 except OllamaUnavailableError as inner_exc:
                     return f"Извини, не могу связаться с Ollama: {inner_exc}"
 

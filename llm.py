@@ -49,6 +49,7 @@ class LocalLLM:
         self,
         messages: list[dict[str, Any]],
         tools: Optional[list[dict]] = None,
+        think: Optional[bool] = None,  # None = взять из config.ENABLE_THINKING
     ) -> dict[str, Any]:
         """
         Отправить сообщения в Ollama и получить ответ.
@@ -56,6 +57,7 @@ class LocalLLM:
         Args:
             messages: История сообщений в формате OpenAI-like.
             tools: Список JSON Schema инструментов (или None).
+            think: Переопределение режима рассуждений (think). None = взять из config.ENABLE_THINKING.
 
         Returns:
             {"type": "text", "content": str}
@@ -70,6 +72,7 @@ class LocalLLM:
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "think": think if think is not None else config.ENABLE_THINKING,
         }
         if tools:
             payload["tools"] = tools

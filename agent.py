@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 import config
+from action_router import route_explicit_action
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
 from memory import working_memory
 from tools import get_tool_schemas, execute_tool, requires_confirmation
@@ -74,6 +75,11 @@ SYSTEM_PROMPT: str = f"""Тебя зовут {config.ASSISTANT_NAME}. Ты — �
    - Открыть сайт/браузер, запустить программу, проверить диски, скопировать бэкап → инструменты из системного контроля (open_browser, open_app, list_removable_drives, copy_project_snapshot)
 3. У тебя есть секция <working_memory> с текущим контекстом — используй её, не переспрашивай то, что там уже написано.
 4. Для напоминаний: сначала get_current_datetime, потом create_reminder с абсолютной датой ISO 8601.
+5. Если пользователь явно просит выполнить действие, ОБЯЗАТЕЛЬНО вызови подходящий инструмент. Нельзя писать, что действие выполнено, если tool не был вызван и не вернул успешный результат.
+   - open_app — для запуска локальных приложений из белого списка.
+   - open_browser — для открытия URL/сайта.
+   - calculate — для вычислений.
+   - create_reminder — для создания напоминаний.
 
 ## Факты и честность (кратко, но обязательно)
 - Реальные люди/даты/проверяемые факты о мире → ВСЕГДА web_search перед ответом,
@@ -149,6 +155,43 @@ class Agent:
         self.history.clear()
         logger.info("Сессионная история диалога очищена.")
 
+    def _remember_turn(self, user_text: str, answer: str) -> str:
+        """Store only the user-visible exchange, including routed actions."""
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": answer})
+        max_messages = MAX_HISTORY_TURNS * 2
+        if len(self.history) > max_messages:
+            self.history = self.history[-max_messages:]
+        return answer
+
+    @staticmethod
+    def _execution_failure(tool_name: str, result: str) -> str | None:
+        """Return a truthful error for structured tool failures, if any."""
+        try:
+            payload = json.loads(result)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if isinstance(payload, dict) and payload.get("success") is False:
+            return payload.get("error") or f"Инструмент {tool_name} не выполнил действие."
+        return None
+
+    def _run_routed_action(self, user_text: str) -> str | None:
+        action = route_explicit_action(user_text)
+        if action is None:
+            return None
+        logger.info("Action router: %s", action.kind)
+        logger.info("application/url: %s", next(iter(action.arguments.values())))
+        logger.info("Tool call: %s(%s)", action.tool_name, json.dumps(action.arguments, ensure_ascii=False))
+        result = execute_tool(action.tool_name, action.arguments)
+        failure = self._execution_failure(action.tool_name, result)
+        if failure:
+            logger.info("Tool result: failure; %s", failure)
+            return self._remember_turn(user_text, f"Не удалось выполнить действие: {failure}")
+        logger.info("Tool result: success")
+        if action.tool_name == "open_app":
+            return self._remember_turn(user_text, f"{action.arguments['app_name']} открыт.")
+        return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере.")
+
     def _decide_thinking(self, user_text: str) -> bool:
         """
         Двухуровневое решение: сначала бесплатная эвристика по ключевым словам,
@@ -211,6 +254,10 @@ class Agent:
         messages этого вызова и НЕ попадают в self.history — туда попадает
         только финальный чистый обмен репликами.
         """
+        routed_answer = self._run_routed_action(user_text)
+        if routed_answer is not None:
+            return routed_answer
+
         llm = self._get_llm()
         use_thinking = self._decide_thinking(user_text)
 
@@ -264,6 +311,12 @@ class Agent:
             tool_result = execute_tool(tool_name, tool_args)
             logger.info("Результат %s: %s", tool_name, tool_result[:200])
 
+            failure = self._execution_failure(tool_name, tool_result)
+            if failure:
+                # Do not let a later text turn claim a failed system action succeeded.
+                final_content = f"Не удалось выполнить действие: {failure}"
+                break
+
             messages.append({
                 "role": "assistant",
                 "content": "",
@@ -279,12 +332,4 @@ class Agent:
             )
 
         # ── Сохраняем ЧИСТУЮ пару в сессионную историю (без tool-шагов) ──
-        self.history.append({"role": "user", "content": user_text})
-        self.history.append({"role": "assistant", "content": final_content})
-
-        # Обрезаем историю до последних MAX_HISTORY_TURNS пар (по 2 сообщения на пару)
-        max_messages = MAX_HISTORY_TURNS * 2
-        if len(self.history) > max_messages:
-            self.history = self.history[-max_messages:]
-
-        return final_content
+        return self._remember_turn(user_text, final_content)

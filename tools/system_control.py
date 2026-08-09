@@ -4,7 +4,9 @@
 доступ к файловой системе за пределами явно описанных функций.
 """
 
+import json
 import logging
+import os
 import shutil
 import string
 import subprocess
@@ -17,11 +19,34 @@ logger = logging.getLogger(__name__)
 
 # Белый список приложений — добавляй сюда вручную, не через параметр модели
 ALLOWED_APPS = {
-    "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "notepad": "notepad.exe",
-    "explorer": "explorer.exe",
+    "chrome": (
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+    ),
+    "vscode": (
+        r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+        r"%ProgramFiles%\Microsoft VS Code\Code.exe",
+    ),
+    "notepad": ("notepad.exe",),
+    "explorer": ("explorer.exe",),
     # Добавь свои пути к нужным приложениям
 }
+
+
+def _tool_result(success: bool, **details: str) -> str:
+    """Serialize an execution result so callers can treat it as authority."""
+    return json.dumps({"success": success, **details}, ensure_ascii=False)
+
+
+def _resolve_allowed_app(app_name: str) -> str | None:
+    """Resolve only known application candidates; never accept user paths."""
+    for candidate in ALLOWED_APPS[app_name]:
+        expanded = os.path.expandvars(candidate)
+        # Bare Windows system commands are intentionally whitelisted above.
+        if not Path(expanded).is_absolute() or Path(expanded).is_file():
+            return expanded
+    return None
 
 
 def open_browser(url: str) -> str:
@@ -32,11 +57,13 @@ def open_browser(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     try:
-        webbrowser.open(url)
-        return f"Открыла {url} в браузере."
+        opened = webbrowser.open(url)
+        if not opened:
+            return _tool_result(False, url=url, error="Браузер не подтвердил открытие URL.")
+        return _tool_result(True, url=url)
     except Exception as e:
         logger.error(f"Ошибка открытия браузера: {e}")
-        return f"Не удалось открыть браузер: {e}"
+        return _tool_result(False, url=url, error=f"Не удалось открыть браузер: {e}")
 
 
 def open_app(app_name: str) -> str:
@@ -47,12 +74,17 @@ def open_app(app_name: str) -> str:
     app_name = app_name.lower().strip()
     if app_name not in ALLOWED_APPS:
         return f"Приложение '{app_name}' не в белом списке. Доступны: {', '.join(ALLOWED_APPS.keys())}"
+    command = _resolve_allowed_app(app_name)
+    if command is None:
+        error = f"Исполняемый файл для '{app_name}' не найден в разрешённых путях."
+        logger.error(error)
+        return _tool_result(False, application=app_name, error=error)
     try:
-        subprocess.Popen(ALLOWED_APPS[app_name])
-        return f"Запустила {app_name}."
+        subprocess.Popen(command)
+        return _tool_result(True, application=app_name)
     except Exception as e:
         logger.error(f"Ошибка запуска приложения {app_name}: {e}")
-        return f"Не удалось запустить {app_name}: {e}"
+        return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {e}")
 
 
 def list_removable_drives() -> str:
@@ -120,13 +152,13 @@ OPEN_BROWSER_DEFINITION: dict = {
 OPEN_APP_DEFINITION: dict = {
     "function": {
         "name": "open_app",
-        "description": "Запустить разрешённую программу из белого списка (chrome, notepad, explorer).",
+        "description": "Запустить разрешённую программу из белого списка (chrome, vscode, notepad, explorer).",
         "parameters": {
             "type": "object",
             "properties": {
                 "app_name": {
                     "type": "string",
-                    "description": "Имя программы для запуска из белого списка (например, 'chrome', 'notepad', 'explorer').",
+                    "description": "Имя программы для запуска из белого списка (например, 'chrome', 'vscode', 'notepad', 'explorer').",
                 },
             },
             "required": ["app_name"],

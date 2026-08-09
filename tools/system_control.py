@@ -12,25 +12,44 @@ import string
 import subprocess
 import webbrowser
 from pathlib import Path
+from typing import TypeAlias
 
 import config
 
 logger = logging.getLogger(__name__)
 
-# Белый список приложений — добавляй сюда вручную, не через параметр модели
-ALLOWED_APPS = {
+# Белый список приложений — добавляй сюда вручную, не через параметр модели.
+# Каждая команда полностью статична: аргументы пользователя сюда не попадают.
+AppCommand: TypeAlias = tuple[str, ...]
+ALLOWED_APPS: dict[str, tuple[AppCommand, ...]] = {
     "chrome": (
-        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+        (r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",),
+        (r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",),
+        (r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",),
     ),
     "vscode": (
-        r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
-        r"%ProgramFiles%\Microsoft VS Code\Code.exe",
+        (r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",),
+        (r"%ProgramFiles%\Microsoft VS Code\Code.exe",),
     ),
-    "notepad": ("notepad.exe",),
-    "explorer": ("explorer.exe",),
+    "discord": (
+        (r"%LOCALAPPDATA%\Discord\Update.exe", "--processStart", "Discord.exe"),
+    ),
+    "telegram": (
+        (r"%APPDATA%\Telegram Desktop\Telegram.exe",),
+        (r"%LOCALAPPDATA%\Programs\Telegram Desktop\Telegram.exe",),
+    ),
+    "notepad": (("notepad.exe",),),
+    "explorer": (("explorer.exe",),),
     # Добавь свои пути к нужным приложениям
+}
+
+_PROCESS_NAMES = {
+    "chrome": "chrome.exe",
+    "vscode": "Code.exe",
+    "discord": "Discord.exe",
+    "telegram": "Telegram.exe",
+    "notepad": "notepad.exe",
+    "explorer": "explorer.exe",
 }
 
 
@@ -39,13 +58,13 @@ def _tool_result(success: bool, **details: str) -> str:
     return json.dumps({"success": success, **details}, ensure_ascii=False)
 
 
-def _resolve_allowed_app(app_name: str) -> str | None:
+def _resolve_allowed_app(app_name: str) -> list[str] | None:
     """Resolve only known application candidates; never accept user paths."""
     for candidate in ALLOWED_APPS[app_name]:
-        expanded = os.path.expandvars(candidate)
+        expanded = os.path.expandvars(candidate[0])
         # Bare Windows system commands are intentionally whitelisted above.
         if not Path(expanded).is_absolute() or Path(expanded).is_file():
-            return expanded
+            return [expanded, *candidate[1:]]
     return None
 
 
@@ -68,7 +87,7 @@ def open_browser(url: str) -> str:
 
 def open_app(app_name: str) -> str:
     """
-    Запускает приложение из белого списка (chrome, notepad, explorer).
+    Запускает приложение из белого списка.
     Приложений вне списка запустить нельзя — это осознанное ограничение.
     """
     app_name = app_name.lower().strip()
@@ -85,6 +104,36 @@ def open_app(app_name: str) -> str:
     except Exception as e:
         logger.error(f"Ошибка запуска приложения {app_name}: {e}")
         return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {e}")
+
+
+def close_app(app_name: str) -> str:
+    """Close an application from the same whitelist after user confirmation."""
+    app_name = app_name.lower().strip()
+    process_name = _PROCESS_NAMES.get(app_name)
+    if process_name is None:
+        return _tool_result(
+            False,
+            application=app_name,
+            error=f"Приложение '{app_name}' не в белом списке.",
+        )
+
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/IM", process_name, "/T"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception as exc:
+        logger.error("Ошибка закрытия приложения %s: %s", app_name, exc)
+        return _tool_result(False, application=app_name, error=f"Не удалось закрыть {app_name}: {exc}")
+
+    if completed.returncode == 0:
+        return _tool_result(True, application=app_name)
+    details = (completed.stderr or completed.stdout).strip() or "Процесс не найден или не завершился."
+    logger.error("Не удалось закрыть %s: %s", app_name, details)
+    return _tool_result(False, application=app_name, error=details)
 
 
 def list_removable_drives() -> str:
@@ -152,19 +201,37 @@ OPEN_BROWSER_DEFINITION: dict = {
 OPEN_APP_DEFINITION: dict = {
     "function": {
         "name": "open_app",
-        "description": "Запустить разрешённую программу из белого списка (chrome, vscode, notepad, explorer).",
+        "description": "Запустить разрешённую программу из белого списка (chrome, vscode, discord, telegram, notepad, explorer).",
         "parameters": {
             "type": "object",
             "properties": {
                 "app_name": {
                     "type": "string",
-                    "description": "Имя программы для запуска из белого списка (например, 'chrome', 'vscode', 'notepad', 'explorer').",
+                    "description": "Имя программы для запуска из белого списка (например, 'chrome', 'vscode', 'discord', 'telegram').",
                 },
             },
             "required": ["app_name"],
         },
     },
     "requires_confirmation": False,
+}
+
+CLOSE_APP_DEFINITION: dict = {
+    "function": {
+        "name": "close_app",
+        "description": "Закрыть разрешённую программу из белого списка после подтверждения пользователя.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "app_name": {
+                    "type": "string",
+                    "description": "Имя приложения из белого списка, например 'chrome' или 'vscode'.",
+                },
+            },
+            "required": ["app_name"],
+        },
+    },
+    "requires_confirmation": True,
 }
 
 LIST_REMOVABLE_DRIVES_DEFINITION: dict = {

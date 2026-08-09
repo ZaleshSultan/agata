@@ -11,6 +11,7 @@
 
 import json
 import logging
+from time import perf_counter
 from typing import Any, Optional
 
 import requests
@@ -79,6 +80,7 @@ class LocalLLM:
             payload["tools"] = tools
 
         try:
+            request_started_at = perf_counter()
             resp = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
@@ -100,7 +102,19 @@ class LocalLLM:
                 f"Ollama вернула ошибку: {resp.status_code} {resp.text[:200]}"
             ) from exc
 
+        request_elapsed = perf_counter() - request_started_at
         data = resp.json()
+        server_timings = {
+            "ollama_total": data.get("total_duration"),
+            "load": data.get("load_duration"),
+            "prompt_eval": data.get("prompt_eval_duration"),
+            "eval": data.get("eval_duration"),
+        }
+        timing_parts = [f"http={request_elapsed:.3f}s"]
+        for name, nanoseconds in server_timings.items():
+            if isinstance(nanoseconds, int):
+                timing_parts.append(f"{name}={nanoseconds / 1_000_000_000:.3f}s")
+        logger.info("[PERF] ollama %s messages=%d tools=%s", " ".join(timing_parts), len(messages), bool(tools))
         message = data.get("message", {})
 
         # ── Проверяем tool_calls ──────────────────────────────────────

@@ -27,10 +27,12 @@ WORKING_MEMORY_PATH: Path = DATA_DIR / "working_memory.md"
 MAX_AGENT_STEPS: int = 5                        # Макс. итераций tool-calling за один запрос
 
 # ── Thinking / Рассуждения ────────────────────────────────────────────────
-ENABLE_ADAPTIVE_THINKING: bool = True  # модель сама решает think true/false на каждый запрос
-# Используется только если ENABLE_ADAPTIVE_THINKING = True.
-# Если False — используется статичный ENABLE_THINKING как раньше.
-ENABLE_THINKING: bool = False  # fallback-значение, если адаптивный режим выключен/не сработал
+# При True Agent использует только локальные эвристики: сложные запросы могут
+# включить think=True, все остальные идут с think=False. Дополнительного LLM-
+# классификатора нет.
+ENABLE_ADAPTIVE_THINKING: bool = True
+# Используется как статичное значение, если локальная эвристика отключена.
+ENABLE_THINKING: bool = False
 
 # ── STT (faster-whisper) ───────────────────────────────────────────────────
 WHISPER_MODEL_SIZE: str = "small"               # tiny / base / small / medium / large-v3

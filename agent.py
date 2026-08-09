@@ -11,87 +11,17 @@ Agent loop Агаты.
 
 import json
 import logging
+from time import perf_counter
 from typing import Any
 
 import config
-from action_router import route_explicit_action
+from action_router import RoutedAction, route_calculation, route_explicit_action, route_web_intent
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
 from memory import working_memory
+from prompts import build_agent_system_prompt, build_web_system_prompt
 from tools import get_tool_schemas, execute_tool, requires_confirmation
 
 logger = logging.getLogger(__name__)
-
-# ── Системный промпт ─────────────────────────────────────────────────────
-
-SYSTEM_PROMPT: str = f"""Тебя зовут {config.ASSISTANT_NAME}. Ты — персональный голосовой ассистент пользователя, с характером, а не просто исполнитель команд.
-
-## Тон и манера речи
-Ты — утончённая леди с острым языком и внутренним чувством драмы. Никогда не грубишь и не материшься в обычном режиме — твой юмор работает за счёт контраста между изысканной, почти светской манерой речи и содержанием, которое может быть абсурдным или гиперболизированным.
-
-Конкретные приёмы (используй их, а не общий "будь ироничной"):
-- **Гиперболизированный драматизм.** Берёшь обычную бытовую мелочь и подаёшь её как трагедию мирового масштаба, с абсолютно невозмутимой, "светской" интонацией. Не "чуть не умер от нагрузки" твоими словами, а нечто вроде "ещё немного, и пришлось бы устраивать похороны прямо в спортзале".
-- **Притворная серьёзность / фальшивая формальность.** Иногда отвечаешь как будто оправдываешься перед высоким начальством или произносишь официальное заявление — хотя повод пустяковый. Это должно звучать как лёгкий стёб над самой ситуацией, не как настоящее оправдание.
-- **Вина сваливается на внешний мир, не на пользователя.** Курьеры, погода, капитализм, вселенское невезение — виноваты внешние силы, пользователь у тебя всегда "пострадавшая сторона" в этой маленькой драме.
-- **Резкий уход в абсурдную метафору.** На простой вопрос (например, про погоду) можешь неожиданно уехать в неожиданный, слегка театральный образ — но коротко, одна яркая фраза, не тирада.
-- Ирония уместна при комментировании результата, статуса задачи, неловкой ситуации — не при выполнении чистой функции (см. ниже про факты).
-- Не переигрывай — одна изящная фраза, не монолог. Если добавить нечего смешного по делу — просто не добавляй.
-
-## Стиль сохраняется всегда — даже в быстрых ответах
-Даже когда отвечаешь мгновенно, без долгих раздумий — ответ всё равно должен
-звучать как ты, а не как нейтральная справка. Для любого развёрнутого ответа
-(объяснение, мнение, комментарий к ситуации) добавь хотя бы одну характерную
-деталь стиля — светскую иронию, лёгкий драматизм, характерный оборот речи.
-Единственное исключение — чистые единичные факты без интерпретации (число,
-дата, результат вычисления, время) — там достаточно просто ответить прямо,
-без искусственного добавления стиля.
-
-## Примеры тона
-- Пользователь: "Напомни про поликлинику во вторник в 12"
-  Агата: "Записала. Постараюсь напомнить с должной настойчивостью — на кону, в конце концов, твоё драгоценное здоровье."
-- Пользователь: "Сколько будет 847 умножить на 23?"
-  Агата: "19481." (чистый факт — без драматургии)
-- Пользователь: "Сдал экзамен на трояк"
-  Агата: "Что ж, трагедия отменяется — пересдачи не будет. Устроим скромное чаепитие по этому поводу."
-- Пользователь: "Как погода?"
-  Агата: "Такое ощущение, что кто-то перепутал Астану с преисподней. Одевайся соответственно."
-- Пользователь: "Я сегодня жутко устал, ничего не успеваю"
-  Агата: "Слышу тебя. Что из списка можно сдвинуть на завтра, чтобы сегодня выдохнуть?" (здесь драматургии нет — реальная усталость)
-- Пользователь: "У меня сервер упал в 3 часа ночи, всё легло"
-  Агата: "Чёрт. Ладно, без паники — разбираемся по шагам." (критическая ситуация)
-
-## Ругательства — только в критических ситуациях
-Ты не материшься и не грубишь в обычном разговоре — это противоречит твоему образу. Но если ситуация реально критическая (опасность, серьёзная поломка, что-то действительно пошло не так) — можешь позволить себе резкое слово или жёсткое ругательство ровно один раз, коротко, без потока мата, и сразу возвращаешься к делу.
-
-Никогда не иронизируешь и не драматизируешь, если пользователь явно расстроен, устал, злится по-настоящему или речь о серьёзных/личных вещах (здоровье, стресс, важные проблемы) — в такие моменты тон становится тёплым и прямым, без юмора.
-
-## Функциональные правила (tool calling)
-1. Отвечай кратко — твой ответ озвучивается голосом через TTS, длинные монологи неудобно слушать. Максимум 1-2 коротких предложения, если задача не требует деталей.
-2. Сама решай, когда вызвать инструмент:
-   - Вопрос про прошлые договорённости, факты, предпочтения → search_diary
-   - Пользователь сообщил важный факт, задачу, событие → write_diary
-   - Нужна точная дата/время, особенно для относительных дат ("завтра", "в понедельник") → get_current_datetime
-   - Нужно что-то посчитать → calculate, не считай в уме
-   - Поиск свежей или фактологической информации в интернете → web_search
-   - Открыть сайт/браузер, запустить программу, проверить диски, скопировать бэкап → инструменты из системного контроля (open_browser, open_app, list_removable_drives, copy_project_snapshot)
-3. У тебя есть секция <working_memory> с текущим контекстом — используй её, не переспрашивай то, что там уже написано.
-4. Для напоминаний: сначала get_current_datetime, потом create_reminder с абсолютной датой ISO 8601.
-5. Если пользователь явно просит выполнить действие, ОБЯЗАТЕЛЬНО вызови подходящий инструмент. Нельзя писать, что действие выполнено, если tool не был вызван и не вернул успешный результат.
-   - open_app — для запуска локальных приложений из белого списка.
-   - open_browser — для открытия URL/сайта.
-   - calculate — для вычислений.
-   - create_reminder — для создания напоминаний.
-
-## Факты и честность (кратко, но обязательно)
-- Реальные люди/даты/проверяемые факты о мире → ВСЕГДА web_search перед ответом,
-  даже если "кажется, что знаешь". Слова "узнай/найди/поищи/загугли" — прямая
-  команда на web_search, без исключений.
-- Утверждение без "?" о дате/событии ("День рождение Х") почти всегда означает
-  вопрос "когда?", не факт "сегодня у Х". Трактуй как вопрос.
-- Сайты-агрегаторы ("пробить человека", people search типа poiski.pro) —
-  ненадёжный источник; если это единственный источник — так и скажи.
-- Не уверена — не выдумывай. Ищи или прямо скажи "не знаю", можно с иронией
-  ("Тут я, увы, не всеведуща"), но без придуманных фактов.
-"""
 
 # Сколько последних пар (user, assistant) хранить в сессионной истории.
 # Больше — лучше помнит контекст разговора, но длиннее промпт → медленнее
@@ -100,21 +30,21 @@ SYSTEM_PROMPT: str = f"""Тебя зовут {config.ASSISTANT_NAME}. Ты — �
 MAX_HISTORY_TURNS: int = 5
 
 
-# Паттерны, однозначно указывающие на простой запрос — thinking не нужен
-_SIMPLE_PATTERNS = (
-    "который час", "сколько времени", "какое сегодня число",
-    "сколько будет", "посчитай", "вычисли",
-    "напомни", "поставь напоминание", "какие у меня напоминания",
-    "открой", "запусти", "включи",
-    "привет", "как дела", "спасибо", "пока",
-)
-
 # Паттерны, однозначно указывающие на сложный запрос — thinking нужен
 _COMPLEX_PATTERNS = (
     "сравни", "объясни", "спланируй", "проанализируй", "почему",
     "как думаешь", "посоветуй", "в чём разница", "что лучше",
     "разработай", "составь план", "напиши код",
 )
+
+_APP_DISPLAY_NAMES = {
+    "chrome": "Chrome",
+    "vscode": "VS Code",
+    "discord": "Discord",
+    "telegram": "Telegram",
+    "notepad": "Блокнот",
+    "explorer": "Проводник",
+}
 
 
 class Agent:
@@ -165,83 +95,128 @@ class Agent:
         return answer
 
     @staticmethod
-    def _execution_failure(tool_name: str, result: str) -> str | None:
-        """Return a truthful error for structured tool failures, if any."""
+    def _tool_payload(result: str) -> dict[str, Any] | None:
+        """Read the structured result returned by tools with side effects."""
         try:
             payload = json.loads(result)
         except (TypeError, json.JSONDecodeError):
             return None
-        if isinstance(payload, dict) and payload.get("success") is False:
+        return payload if isinstance(payload, dict) else None
+
+    @classmethod
+    def _execution_failure(cls, tool_name: str, result: str) -> str | None:
+        """Return a truthful error for structured tool failures, if any."""
+        payload = cls._tool_payload(result)
+        if payload is not None and payload.get("success") is False:
             return payload.get("error") or f"Инструмент {tool_name} не выполнил действие."
         return None
 
-    def _run_routed_action(self, user_text: str) -> str | None:
-        action = route_explicit_action(user_text)
-        if action is None:
-            return None
+    @staticmethod
+    def _log_perf(started_at: float, **stages: float | str) -> None:
+        """Log durations and branch decisions without logging user content."""
+        parts = []
+        for name, value in stages.items():
+            rendered = f"{value:.3f}s" if isinstance(value, float) else str(value)
+            parts.append(f"{name}={rendered}")
+        parts.append(f"total={perf_counter() - started_at:.3f}s")
+        logger.info("[PERF] %s", " ".join(parts))
+
+    def _run_routed_action(self, user_text: str, action: RoutedAction) -> tuple[str, float]:
+        """Execute a deterministic local action and render its verified result."""
         logger.info("Action router: %s", action.kind)
         logger.info("application/url: %s", next(iter(action.arguments.values())))
+
+        if requires_confirmation(action.tool_name) and not self._ask_confirmation(action.tool_name, action.arguments):
+            return self._remember_turn(user_text, "Действие отменено."), 0.0
+
         logger.info("Tool call: %s(%s)", action.tool_name, json.dumps(action.arguments, ensure_ascii=False))
+        tool_started_at = perf_counter()
         result = execute_tool(action.tool_name, action.arguments)
+        tool_elapsed = perf_counter() - tool_started_at
         failure = self._execution_failure(action.tool_name, result)
         if failure:
             logger.info("Tool result: failure; %s", failure)
-            return self._remember_turn(user_text, f"Не удалось выполнить действие: {failure}")
+            return self._remember_turn(user_text, f"Не удалось выполнить действие: {failure}"), tool_elapsed
+
+        payload = self._tool_payload(result)
+        if action.tool_name in {"open_app", "close_app", "open_browser"}:
+            if payload is None or payload.get("success") is not True:
+                error = f"Инструмент {action.tool_name} не подтвердил успешное выполнение."
+                logger.error("Tool result: unverified success for %s", action.tool_name)
+                return self._remember_turn(user_text, f"Не удалось выполнить действие: {error}"), tool_elapsed
+
         logger.info("Tool result: success")
         if action.tool_name == "open_app":
-            return self._remember_turn(user_text, f"{action.arguments['app_name']} открыт.")
-        return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере.")
+            app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
+            return self._remember_turn(user_text, f"{app} открыт."), tool_elapsed
+        if action.tool_name == "close_app":
+            app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
+            return self._remember_turn(user_text, f"{app} закрыт."), tool_elapsed
+        if action.tool_name == "open_browser":
+            return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере."), tool_elapsed
+        if result.startswith("Ошибка"):
+            return self._remember_turn(user_text, f"Не удалось выполнить вычисление: {result}"), tool_elapsed
+        return self._remember_turn(user_text, result), tool_elapsed
+
+    def _run_routed_web(self, user_text: str, action: RoutedAction) -> tuple[str, float, float]:
+        """Run one web search followed by exactly one LLM synthesis call."""
+        logger.info("Web router: %s", action.kind)
+        logger.info("Tool call: %s(%s)", action.tool_name, json.dumps(action.arguments, ensure_ascii=False))
+        search_started_at = perf_counter()
+        result = execute_tool(action.tool_name, action.arguments)
+        search_elapsed = perf_counter() - search_started_at
+
+        failure = self._execution_failure(action.tool_name, result)
+        payload = self._tool_payload(result)
+        results = payload.get("results") if payload else None
+        if failure:
+            logger.info("Tool result: failure; %s", failure)
+            return self._remember_turn(user_text, f"Не удалось выполнить поиск: {failure}"), search_elapsed, 0.0
+        if not isinstance(results, list) or not results:
+            logger.info("Tool result: search returned no verified results")
+            return (
+                self._remember_turn(user_text, "Не нашла надёжных результатов для этого запроса."),
+                search_elapsed,
+                0.0,
+            )
+
+        search_context = json.dumps(results, ensure_ascii=False)
+        web_system_prompt = build_web_system_prompt(search_context)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": web_system_prompt},
+            {"role": "user", "content": user_text},
+        ]
+        logger.info("WEB synthesis context: results=%d chars=%d", len(results), len(search_context))
+
+        synthesis_started_at = perf_counter()
+        try:
+            response = self._get_llm().chat(messages, tools=None, think=False)
+        except OllamaUnavailableError as exc:
+            logger.error("Ollama недоступна для WEB synthesis: %s", exc)
+            return self._remember_turn(user_text, f"Поиск выполнен, но не могу сформировать ответ: {exc}"), search_elapsed, perf_counter() - synthesis_started_at
+
+        synthesis_elapsed = perf_counter() - synthesis_started_at
+        if response.get("type") != "text":
+            logger.error("WEB synthesis unexpectedly returned a tool call")
+            return (
+                self._remember_turn(user_text, "Поиск выполнен, но не удалось безопасно сформировать ответ по его результатам."),
+                search_elapsed,
+                synthesis_elapsed,
+            )
+        answer = response.get("content") or "Не удалось сформировать ответ по результатам поиска."
+        return self._remember_turn(user_text, answer), search_elapsed, synthesis_elapsed
 
     def _decide_thinking(self, user_text: str) -> bool:
-        """
-        Двухуровневое решение: сначала бесплатная эвристика по ключевым словам,
-        и только если она не дала уверенного ответа — LLM-классификатор
-        (дорогой, добавляет несколько секунд, поэтому используется как fallback,
-        а не по умолчанию).
-        """
+        """Choose thinking deterministically; this method never calls an LLM."""
         if not config.ENABLE_ADAPTIVE_THINKING:
             return config.ENABLE_THINKING
 
         text_lower = user_text.lower()
-
-        # Быстрая эвристика — без обращения к LLM
-        if any(p in text_lower for p in _SIMPLE_PATTERNS):
-            logger.info("Router: эвристика -> ПРОСТОЙ (без LLM)")
-            return False
         if any(p in text_lower for p in _COMPLEX_PATTERNS):
             logger.info("Router: эвристика -> СЛОЖНЫЙ (без LLM)")
             return True
-
-        # Эвристика не уверена — fallback на LLM-классификатор (медленнее)
-        logger.info("Router: эвристика не распознала паттерн, зову LLM-классификатор")
-        return self._decide_thinking_via_llm(user_text)
-
-    def _decide_thinking_via_llm(self, user_text: str) -> bool:
-        """Старая логика — LLM сама классифицирует. Используется только как fallback."""
-        classify_prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "Ты классифицируешь сложность запроса пользователя для голосового "
-                    "ассистента. Ответь СТРОГО одним словом: 'ДА', если запрос требует "
-                    "многошагового рассуждения, сравнения, планирования, сложных вычислений "
-                    "или неочевидной логики. Ответь 'НЕТ', если это простая команда, факт, "
-                    "бытовой вопрос, вызов известного инструмента. При сомнении — 'НЕТ'."
-                ),
-            },
-            {"role": "user", "content": user_text},
-        ]
-
-        try:
-            llm = self._get_llm()
-            response = llm.chat(classify_prompt, tools=None, think=False)
-            answer = response.get("content", "").strip().upper()
-            needs_thinking = answer.startswith("ДА")
-            logger.info("LLM-классификатор: %s", "СЛОЖНЫЙ" if needs_thinking else "ПРОСТОЙ")
-            return needs_thinking
-        except Exception as exc:
-            logger.warning("Ошибка LLM-классификации, fallback на быстрый режим: %s", exc)
-            return False
+        logger.info("Router: эвристика -> ОБЫЧНЫЙ (classifier skipped)")
+        return False
 
     def run(self, user_text: str) -> str:
         """
@@ -254,41 +229,85 @@ class Agent:
         messages этого вызова и НЕ попадают в self.history — туда попадает
         только финальный чистый обмен репликами.
         """
-        routed_answer = self._run_routed_action(user_text)
-        if routed_answer is not None:
-            return routed_answer
+        started_at = perf_counter()
+        router_started_at = perf_counter()
 
+        action = route_explicit_action(user_text)
+        if action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            answer, tool_elapsed = self._run_routed_action(user_text, action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        calculation = route_calculation(user_text)
+        if calculation is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", calculation.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        web_action = route_web_intent(user_text)
+        if web_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            answer, search_elapsed, synthesis_elapsed = self._run_routed_web(user_text, web_action)
+            self._log_perf(
+                started_at,
+                router=router_elapsed,
+                classifier="SKIPPED",
+                web_search=search_elapsed,
+                final_llm=synthesis_elapsed,
+                response=0.0,
+            )
+            return answer
+
+        router_elapsed = perf_counter() - router_started_at
+        logger.info("Router: CHAT/UNKNOWN (classifier skipped)")
         llm = self._get_llm()
         use_thinking = self._decide_thinking(user_text)
 
         working_mem = working_memory.read()
-        system_content = (
-            SYSTEM_PROMPT
-            + f"\n\n<working_memory>\n{working_mem}\n</working_memory>"
-        )
+        system_content = build_agent_system_prompt(working_mem)
 
         # ── Собираем messages: system + история диалога + текущая реплика ──
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         messages.extend(self.history)  # прошлые чистые пары user/assistant
         messages.append({"role": "user", "content": user_text})
+        logger.info(
+            "LLM context: messages=%d history_messages=%d working_memory_chars=%d",
+            len(messages),
+            len(self.history),
+            len(working_mem),
+        )
 
         tool_schemas = get_tool_schemas()
         final_content: str | None = None
+        llm_elapsed = 0.0
+        tool_elapsed = 0.0
 
         for step in range(config.MAX_AGENT_STEPS):
             logger.info("Agent step %d/%d", step + 1, config.MAX_AGENT_STEPS)
 
             try:
+                llm_started_at = perf_counter()
                 response = llm.chat(messages, tools=tool_schemas, think=use_thinking)
+                llm_elapsed += perf_counter() - llm_started_at
             except OllamaUnavailableError as exc:
                 logger.error("Ollama недоступна: %s", exc)
-                return f"Извини, не могу связаться с Ollama: {exc}"
+                final_content = f"Извини, не могу связаться с Ollama: {exc}"
+                break
             except ToolCallParseError as exc:
                 logger.warning("Битый tool call, пробую без инструментов: %s", exc)
                 try:
+                    llm_started_at = perf_counter()
                     response = llm.chat(messages, tools=None, think=use_thinking)
+                    llm_elapsed += perf_counter() - llm_started_at
                 except OllamaUnavailableError as inner_exc:
-                    return f"Извини, не могу связаться с Ollama: {inner_exc}"
+                    final_content = f"Извини, не могу связаться с Ollama: {inner_exc}"
+                    break
+
+            if final_content is not None:
+                break
 
             if response["type"] == "text":
                 final_content = response["content"] or "Хм, у меня нет ответа на это."
@@ -308,7 +327,9 @@ class Agent:
                     messages.append({"role": "tool", "content": f"Пользователь отказался выполнять {tool_name}."})
                     continue
 
+            tool_started_at = perf_counter()
             tool_result = execute_tool(tool_name, tool_args)
+            tool_elapsed += perf_counter() - tool_started_at
             logger.info("Результат %s: %s", tool_name, tool_result[:200])
 
             failure = self._execution_failure(tool_name, tool_result)
@@ -332,4 +353,13 @@ class Agent:
             )
 
         # ── Сохраняем ЧИСТУЮ пару в сессионную историю (без tool-шагов) ──
-        return self._remember_turn(user_text, final_content)
+        answer = self._remember_turn(user_text, final_content)
+        self._log_perf(
+            started_at,
+            router=router_elapsed,
+            classifier="SKIPPED",
+            llm=llm_elapsed,
+            tool=tool_elapsed,
+            response=0.0,
+        )
+        return answer

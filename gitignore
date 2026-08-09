@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Данные — дневник, напоминания, рабочая память (личное, в репо не нужно)
+data/*.db
+data/working_memory.md
+
+# Модели TTS (тяжёлые бинарники, не для git)
+models/*.onnx
+models/*.onnx.json
+
+# Временные аудиофайлы
+*.wav
+temp_output.wav
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db

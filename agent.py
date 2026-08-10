@@ -46,6 +46,16 @@ _APP_DISPLAY_NAMES = {
     "explorer": "Проводник",
 }
 
+# Инструменты, которые action_router.py уже перехватывает детерминированно
+# ДО обращения к LLM — в разговорной ветке (CHAT/UNKNOWN) их не нужно
+# посылать в tools, это чистый лишний вес в промпте.
+_ROUTER_HANDLED_TOOLS: set[str] = {
+    "calculate",
+    "open_app",
+    "close_app",
+    "open_browser",
+    "web_search",
+}
 
 class Agent:
     """
@@ -280,7 +290,7 @@ class Agent:
             len(working_mem),
         )
 
-        tool_schemas = get_tool_schemas()
+        tool_schemas = get_tool_schemas(exclude=_ROUTER_HANDLED_TOOLS)
         final_content: str | None = None
         llm_elapsed = 0.0
         tool_elapsed = 0.0

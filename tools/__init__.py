@@ -105,15 +105,21 @@ _REGISTRY: dict[str, dict[str, Any]] = {
 
 
 
-def get_tool_schemas() -> list[dict]:
+def get_tool_schemas(exclude: set[str] | None = None) -> list[dict]:
     """
-    Получить JSON Schema всех инструментов для передачи в Ollama.
+    Получить JSON Schema инструментов для передачи в Ollama.
+
+    Args:
+        exclude: Имена инструментов, которые не нужно передавать LLM.
 
     Returns:
         Список tool definitions в формате Ollama API.
     """
+    excluded = exclude or set()
     schemas: list[dict] = []
-    for tool_info in _REGISTRY.values():
+    for name, tool_info in _REGISTRY.items():
+        if name in excluded:
+            continue
         schemas.append({
             "type": "function",
             "function": tool_info["schema"]["function"],

@@ -76,16 +76,79 @@ def speak(text: str) -> None:
 
 
 def _clean_for_speech(text: str) -> str:
-    """Убрать из текста элементы, неудобные для озвучивания."""
+    """Убрать markdown и элементы, неудобные для озвучивания."""
+
     import re
-    # Убираем markdown: **, *, `, #, [](), ~~
+
     cleaned = text
-    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)  # **bold**
-    cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)      # *italic*
-    cleaned = re.sub(r"`(.+?)`", r"\1", cleaned)         # `code`
-    cleaned = re.sub(r"#{1,6}\s*", "", cleaned)           # # headers
-    cleaned = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", cleaned) # [link](url)
-    cleaned = re.sub(r"~~(.+?)~~", r"\1", cleaned)        # ~~strikethrough~~
-    # Убираем множественные пробелы
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # Кодовые блоки
+    cleaned = re.sub(
+        r"```.*?```",
+        "",
+        cleaned,
+        flags=re.DOTALL,
+    )
+
+    # Inline code
+    cleaned = re.sub(
+        r"`([^`]+)`",
+        r"\1",
+        cleaned,
+    )
+
+    # Bold / italic
+    cleaned = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"\1",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"__(.+?)__",
+        r"\1",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"\*(.+?)\*",
+        r"\1",
+        cleaned,
+    )
+
+    cleaned = re.sub(
+        r"_(.+?)_",
+        r"\1",
+        cleaned,
+    )
+
+    # Markdown links
+    cleaned = re.sub(
+        r"\[([^\]]+)\]\([^)]+\)",
+        r"\1",
+        cleaned,
+    )
+
+    # Заголовки
+    cleaned = re.sub(
+        r"^#{1,6}\s*",
+        "",
+        cleaned,
+        flags=re.MULTILINE,
+    )
+
+    # Strikethrough
+    cleaned = re.sub(
+        r"~~(.+?)~~",
+        r"\1",
+        cleaned,
+    )
+
+    # Убираем лишние пробелы
+    cleaned = re.sub(
+        r"\s+",
+        " ",
+        cleaned,
+    ).strip()
+
     return cleaned

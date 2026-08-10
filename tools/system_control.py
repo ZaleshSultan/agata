@@ -119,9 +119,11 @@ def close_app(app_name: str) -> str:
 
     try:
         completed = subprocess.run(
-            ["taskkill", "/IM", process_name, "/T"],
+            ["taskkill", "/F", "/T", "/IM", process_name],
             capture_output=True,
             text=True,
+            encoding="cp866",   # Windows OEM-кодировка консольных утилит вроде taskkill
+            errors="replace",   # не падать, если попадётся byte вне cp866
             timeout=15,
             check=False,
         )

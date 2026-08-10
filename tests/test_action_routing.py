@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from action_router import route_calculation, route_explicit_action, route_web_intent
 from agent import Agent
-from tools import list_tool_names, system_control
+from tools import get_tool_schemas, list_tool_names, system_control
 from tools.calc import calculate
 from tools.web_search import MAX_RESULTS, web_search
 
@@ -81,6 +81,14 @@ class ActionRoutingTests(unittest.TestCase):
 
     def test_close_app_is_registered(self) -> None:
         self.assertIn("close_app", list_tool_names())
+
+    def test_tool_schemas_support_exclusion(self) -> None:
+        schemas = get_tool_schemas(exclude={"calculate", "web_search", "open_app"})
+        names = {schema["function"]["name"] for schema in schemas}
+        self.assertNotIn("calculate", names)
+        self.assertNotIn("web_search", names)
+        self.assertNotIn("open_app", names)
+        self.assertIn("get_current_datetime", names)
 
     def test_action_bypasses_llm(self) -> None:
         agent = Agent()

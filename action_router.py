@@ -19,11 +19,11 @@ class RoutedAction:
 
 
 _OPEN_ACTION_VERB = re.compile(
-    r"^\s*(?:открой|открыть|запусти|запустить|включи|включить)\s+",
+    r"^\s*(?:открой|открыть|открывай|запусти|запустить|запускай|включи|включить|включай|покажи|показать|зайди|зайти|перейди|перейти)\s+",
     re.IGNORECASE,
 )
 _CLOSE_ACTION_VERB = re.compile(
-    r"^\s*(?:закрой|закрыть|выключи|выключить)\s+",
+    r"^\s*(?:закрой|закрыть|закрывай|выключи|выключить|выключай)\s+",
     re.IGNORECASE,
 )
 _URL = re.compile(
@@ -31,22 +31,44 @@ _URL = re.compile(
     re.IGNORECASE,
 )
 _APPLICATION_ALIASES = {
+    # Chrome
     "chrome": "chrome",
     "google chrome": "chrome",
     "гугл хром": "chrome",
+    "гугл-хром": "chrome",
     "хром": "chrome",
+    # VS Code
     "vscode": "vscode",
     "vs code": "vscode",
     "visual studio code": "vscode",
     "вс код": "vscode",
+    "vs код": "vscode",
+    # Discord
     "discord": "discord",
     "дискорд": "discord",
+    # Telegram
     "telegram": "telegram",
     "телеграм": "telegram",
+    "телега": "telegram",
+    # Spotify
+    "spotify": "spotify",
+    "спотифай": "spotify",
+    # Steam
+    "steam": "steam",
+    "стим": "steam",
+    # Notepad
+    "notepad": "notepad",
+    "блокнот": "notepad",
+    # Explorer
+    "explorer": "explorer",
+    "проводник": "explorer",
 }
 _SERVICE_URLS = {
     "youtube": "https://www.youtube.com",
     "ютуб": "https://www.youtube.com",
+    "ютьюб": "https://www.youtube.com",
+    "github": "https://www.github.com",
+    "гитхаб": "https://www.github.com",
 }
 
 # These patterns intentionally target externally verifiable information rather

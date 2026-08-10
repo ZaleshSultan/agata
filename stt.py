@@ -21,6 +21,7 @@ import numpy as np
 import sounddevice as sd  # type: ignore[import-untyped]
 
 import config
+from stt_normalize import normalize_stt
 
 logger = logging.getLogger(__name__)
 
@@ -188,9 +189,12 @@ def _record_audio() -> np.ndarray:
                     silent_count = 0
 
             else:
-                # Сигнал снова стал тихим —
-                # считаем, что речи ещё нет.
-                speech_blocks = 0
+                # "Leaky bucket": одиночный короткий провал между
+                # слогами не должен обнулять весь набранный прогресс —
+                # только слегка снижать счётчик. Полный сброс делал
+                # min_speech_blocks практически недостижимым при
+                # естественной речи (подтверждено диагностикой mic_test.py).
+                speech_blocks = max(0, speech_blocks - 1)
 
         # ─────────────────────────────────────────────
         # Уже записываем речь
@@ -333,20 +337,11 @@ def record_and_transcribe() -> str:
         )
         return ""
 
-    # Дополнительная проверка RMS.
-    audio_rms = float(
-        np.sqrt(
-            np.mean(
-                np.square(audio)
-            )
-        )
-    )
-
-    if audio_rms < config.SILENCE_THRESHOLD:
-        logger.info(
-            "Аудио слишком тихое (RMS=%.5f) — пропускаю",
-            audio_rms,
-        )
+    # Проверка на явно битую/нулевую запись —
+    # порог сильно ниже блочного, т.к. это RMS по всему клипу с тишиной.
+    audio_rms = float(np.sqrt(np.mean(np.square(audio))))
+    if audio_rms < config.SILENCE_THRESHOLD * 0.25:
+        logger.info("Аудио явно пустое (RMS=%.5f) — пропускаю", audio_rms)
         return ""
 
     # ─────────────────────────────────────────────────
@@ -368,7 +363,20 @@ def record_and_transcribe() -> str:
             tmp.write(wav_bytes)
             tmp_path = tmp.name
 
-        return transcribe_file(tmp_path)
+        raw_text = transcribe_file(tmp_path)
+        if not raw_text:
+            return ""
+
+        # ─────────────────────────────────────────────
+        # Нормализация: raw STT → canonical text
+        # ─────────────────────────────────────────────
+        normalized = normalize_stt(raw_text)
+        if normalized != raw_text:
+            logger.info("STT raw: '%s'", raw_text)
+            logger.info("STT normalized: '%s'", normalized)
+        else:
+            logger.info("STT: '%s'", raw_text)
+        return normalized
 
     except Exception as exc:
         logger.error(
@@ -410,12 +418,17 @@ def transcribe_file(path: str) -> str:
     segments, info = model.transcribe(
         path,
 
-        # Агата сейчас ориентирована на русский язык.
+        # Агата ориентирована на русский язык.
         language="ru",
 
-        # Более стабильное распознавание.
+        # beam_size=5 — стабильный выбор для RTX 4050 (не медленнее beam_size=1
+        # на больших моделях, но точнее).
         beam_size=5,
         temperature=0.0,
+
+        # initial_prompt — подсказка Whisper о домене и имени ассистента.
+        # Это улучшает распознавание собственных имён и команд.
+        initial_prompt="Агата, открой, закрой, запусти, найди. Привет, Агата!",
 
         # Дополнительный VAD внутри Whisper.
         vad_filter=True,

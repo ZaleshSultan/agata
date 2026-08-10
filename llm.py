@@ -74,6 +74,7 @@ class LocalLLM:
             "messages": messages,
             "stream": False,
             "think": think if think is not None else config.ENABLE_THINKING,
+            "keep_alive": config.OLLAMA_KEEP_ALIVE,
         }
         logger.info("Отправка запроса с think=%s", payload.get("think"))
         if tools:
@@ -165,7 +166,11 @@ class LocalLLM:
         try:
             resp = requests.post(
                 f"{self.base_url}/api/embed",
-                json={"model": self.embed_model, "input": text},
+                json={
+                    "model": self.embed_model,
+                    "input": text,
+                    "keep_alive": config.OLLAMA_KEEP_ALIVE,
+                },
                 timeout=60,
             )
             resp.raise_for_status()

@@ -15,6 +15,7 @@ DATA_DIR: Path = BASE_DIR / "data"
 OLLAMA_URL: str = "http://localhost:11434"
 LLM_MODEL: str = "agata"                       # Qwen3-30B-A3B + Modelfile-характер
 EMBED_MODEL: str = "nomic-embed-text"           # Модель для эмбеддингов
+OLLAMA_KEEP_ALIVE: str = "30m"                  # Время удержания модели в VRAM при простое
 
 # ── Ассистент ──────────────────────────────────────────────────────────────
 ASSISTANT_NAME: str = "Агата"
@@ -35,7 +36,9 @@ ENABLE_ADAPTIVE_THINKING: bool = True
 ENABLE_THINKING: bool = False
 
 # ── STT (faster-whisper) ───────────────────────────────────────────────────
-WHISPER_MODEL_SIZE: str = "small"               # tiny / base / small / medium / large-v3
+# large-v3-turbo — оптимальный баланс качество/скорость для русского языка на RTX 4050.
+# Альтернативы: tiny / base / small / medium / large-v3 / large-v3-turbo
+WHISPER_MODEL_SIZE: str = "large-v3-turbo"
 WHISPER_DEVICE: str = "cuda"                    # "cuda" для RTX 4050, "cpu" как fallback
 WHISPER_COMPUTE_TYPE: str = "float16"           # float16 на GPU, int8 на CPU
 
@@ -47,8 +50,7 @@ TTS_RATE: int = 175                             # Скорость речи pytt
 SAMPLE_RATE: int = 16000
 
 # Порог RMS для определения речи.
-# 0.02 — стартовое значение, при необходимости подстроим под микрофон.
-SILENCE_THRESHOLD: float = 0.02
+SILENCE_THRESHOLD: float = 0.015
 
 # Сколько тишины после речи считать концом фразы.
 SILENCE_DURATION: float = 0.8
@@ -61,7 +63,7 @@ MAX_RECORD_SECONDS: int = 20
 PRE_ROLL_SECONDS: float = 0.4
 
 # Минимальная продолжительность обнаруженной речи.
-MIN_SPEECH_SECONDS: float = 0.3
+MIN_SPEECH_SECONDS: float = 0.15
 
 # ── Консолидация ───────────────────────────────────────────────────────────
 CONSOLIDATION_DAYS: int = 7                     # За сколько дней брать записи для "сна"

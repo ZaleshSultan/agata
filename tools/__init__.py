@@ -89,6 +89,12 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "schema": system_control.CLOSE_APP_DEFINITION,
         "requires_confirmation": system_control.CLOSE_APP_DEFINITION["requires_confirmation"],
     },
+    # Системный контроль — универсальное закрытие цели/сайта
+    "close_target": {
+        "function": system_control.close_target,
+        "schema": system_control.CLOSE_TARGET_DEFINITION,
+        "requires_confirmation": system_control.CLOSE_TARGET_DEFINITION["requires_confirmation"],
+    },
     # Системный контроль — список съёмных дисков
     "list_removable_drives": {
         "function": lambda **_: system_control.list_removable_drives(),

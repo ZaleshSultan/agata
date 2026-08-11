@@ -8,6 +8,8 @@
 """
 
 import logging
+import threading
+import time
 from typing import Optional
 
 import numpy as np  # обязательный импорт по ТЗ
@@ -18,6 +20,29 @@ logger = logging.getLogger(__name__)
 
 # Ленивая инициализация TTS-движка
 _engine = None
+_is_speaking_flag: bool = False
+_last_tts_finish_time: float = 0.0
+_tts_lock = threading.Lock()
+
+
+def is_speaking() -> bool:
+    """Проверить, воспроизводит ли TTS текст в данный момент."""
+    with _tts_lock:
+        return _is_speaking_flag
+
+
+def get_last_tts_finish_time() -> float:
+    """Получить unix timestamp окончания последнего TTS-воспроизведения."""
+    with _tts_lock:
+        return _last_tts_finish_time
+
+
+def _set_speaking_state(speaking: bool) -> None:
+    global _is_speaking_flag, _last_tts_finish_time
+    with _tts_lock:
+        _is_speaking_flag = speaking
+        if not speaking:
+            _last_tts_finish_time = time.time()
 
 
 def _get_engine():
@@ -64,6 +89,7 @@ def speak(text: str) -> None:
     # Убираем markdown-разметку, которая плохо звучит
     clean_text = _clean_for_speech(text)
 
+    _set_speaking_state(True)
     try:
         engine = _get_engine()
         engine.say(clean_text)
@@ -73,6 +99,8 @@ def speak(text: str) -> None:
         logger.error("Ошибка TTS: %s", exc)
         # Не роняем программу — просто не озвучиваем
         print(f"[TTS ошибка: {exc}]")
+    finally:
+        _set_speaking_state(False)
 
 
 def _clean_for_speech(text: str) -> str:

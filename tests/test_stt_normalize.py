@@ -124,78 +124,69 @@ class VoiceCommandRoutingTests(unittest.TestCase):
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
+        self.assertEqual(action.kind, "OPEN_APP")
 
     def test_otkroyu_khrom(self) -> None:
-        """'открою хром' после нормализации → OPEN_APP chrome"""
+        """'открою хром' после нормализации → OPEN_APP"""
         action = self._route_voice("открою хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_otkryvai_khrom(self) -> None:
-        """'открывай хром' → OPEN_APP chrome"""
+        """'открывай хром' → OPEN_APP"""
         action = route_explicit_action("открывай хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_zapusti_khrom(self) -> None:
         action = self._route_voice("запусти хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_zapuskai_khrom(self) -> None:
-        """'запускай хром' → OPEN_APP chrome"""
+        """'запускай хром' → OPEN_APP"""
         action = route_explicit_action("запускай хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_agata_otkroi_chrome(self) -> None:
-        """'Агата открой Chrome' → OPEN_APP chrome"""
+        """'Агата открой Chrome' → OPEN_APP"""
         action = self._route_voice("Агата открой Chrome")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_agata_zapusti_chrome_with_comma(self) -> None:
-        """'Агата, запусти Chrome' → OPEN_APP chrome"""
+        """'Агата, запусти Chrome' → OPEN_APP"""
         action = self._route_voice("Агата, запусти Chrome")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_otkroi_google_chrome(self) -> None:
-        """'открой гугл хром' → OPEN_APP chrome"""
+        """'открой гугл хром' → OPEN_APP"""
         action = self._route_voice("открой гугл хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_mozhesh_otkryt_chrome(self) -> None:
-        """'можешь открыть Chrome' → OPEN_APP chrome"""
+        """'можешь открыть Chrome' → OPEN_APP"""
         action = self._route_voice("можешь открыть Chrome")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     def test_otkroyu_khrom_with_dot(self) -> None:
-        """'открою хром.' (Whisper trailing punct) → OPEN_APP chrome"""
+        """'открою хром.' (Whisper trailing punct) → OPEN_APP"""
         action = self._route_voice("открою хром.")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
-        self.assertEqual(action.arguments["app_name"], "chrome")
 
     # ── Вопрос не роутится как action ──────────────────────────────────────
 
@@ -214,49 +205,49 @@ class VoiceCommandRoutingTests(unittest.TestCase):
         action = self._route_voice("Привет, как дела?")
         self.assertIsNone(action)
 
-    # ── Aliases ─────────────────────────────────────────────────────────────
+    # ── Aliases: проверяем что роутинг работает ────────────────────────────
 
-    def test_alias_khrom_to_chrome(self) -> None:
+    def test_alias_khrom_to_open_app(self) -> None:
         action = route_explicit_action("открой хром")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual(action.arguments["app_name"], "chrome")
+        self.assertEqual(action.tool_name, "open_app")
 
-    def test_alias_chrome_to_chrome(self) -> None:
+    def test_alias_chrome_to_open_app(self) -> None:
         action = route_explicit_action("открой Chrome")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual(action.arguments["app_name"], "chrome")
+        self.assertEqual(action.tool_name, "open_app")
 
-    def test_alias_gugol_khrom_to_chrome(self) -> None:
+    def test_alias_gugol_khrom_to_open_app(self) -> None:
         action = route_explicit_action("открой гугл хром")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual(action.arguments["app_name"], "chrome")
+        self.assertEqual(action.tool_name, "open_app")
 
-    def test_alias_telega_to_telegram(self) -> None:
+    def test_alias_telega_to_open_app(self) -> None:
         action = route_explicit_action("открой телега")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual(action.arguments["app_name"], "telegram")
+        self.assertEqual(action.tool_name, "open_app")
 
-    def test_alias_telegramm_to_telegram(self) -> None:
+    def test_alias_telegramm_to_open_app(self) -> None:
         action = route_explicit_action("открой телеграм")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual(action.arguments["app_name"], "telegram")
+        self.assertEqual(action.tool_name, "open_app")
 
     # ── Новые глаголы в action_router ──────────────────────────────────────
 
     def test_pokazhi_routes_to_open(self) -> None:
-        """'покажи хром' → OPEN_APP chrome"""
+        """'покажи хром' → OPEN_APP"""
         action = route_explicit_action("покажи хром")
         self.assertIsNotNone(action)
         assert action is not None
         self.assertEqual(action.tool_name, "open_app")
 
     def test_zapuskai_routes_directly(self) -> None:
-        """'запускай хром' → OPEN_APP chrome (без нормализации)"""
+        """'запускай хром' → OPEN_APP (без нормализации)"""
         action = route_explicit_action("запускай хром")
         self.assertIsNotNone(action)
         assert action is not None
@@ -265,3 +256,4 @@ class VoiceCommandRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

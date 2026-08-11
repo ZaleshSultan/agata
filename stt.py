@@ -21,6 +21,7 @@ import numpy as np
 import sounddevice as sd  # type: ignore[import-untyped]
 
 import config
+import tts
 from stt_normalize import normalize_stt
 
 logger = logging.getLogger(__name__)
@@ -82,135 +83,74 @@ def _record_audio() -> np.ndarray:
     """
     Записать речь с микрофона до обнаружения тишины.
 
-    Используется energy-based VAD по RMS:
-
-    1. Ждём появления речи.
-    2. Храним небольшой pre-roll до начала речи.
-    3. После начала речи продолжаем запись.
-    4. При достаточной тишине завершаем запись.
-    5. Есть максимальный лимит длительности.
-
-    Returns:
-        numpy-массив float32, mono.
-        Пустой массив, если речь не обнаружена.
+    Используется energy-based VAD по RMS с многоуровневой защитой:
+    - Ожидание завершения TTS + кулдаун;
+    - Требование минимальной длительности звучащих кадров;
+    - Сбор подробных метрик аудио для логов.
     """
+    # ── Проверка TTS блокировки и кулдауна ─────────────────────────────────────
+    if tts.is_speaking():
+        logger.info("[STT] TTS воспроизводится — ожидаю завершения...")
+        while tts.is_speaking():
+            time.sleep(0.05)
+
+    time_since_tts = time.time() - tts.get_last_tts_finish_time()
+    if time_since_tts < config.TTS_COOLDOWN_SECONDS:
+        cooldown_wait = config.TTS_COOLDOWN_SECONDS - time_since_tts
+        logger.info("[STT] Ожидание кулдауна после TTS (%.2fс)...", cooldown_wait)
+        time.sleep(cooldown_wait)
 
     sample_rate: int = config.SAMPLE_RATE
-
-    # Размер одного блока — 50 мс.
     block_duration: float = 0.05
     block_size: int = int(sample_rate * block_duration)
 
-    silence_blocks: int = max(
-        1,
-        int(config.SILENCE_DURATION / block_duration),
-    )
+    silence_blocks: int = max(1, int(config.SILENCE_DURATION / block_duration))
+    max_blocks: int = max(1, int(config.MAX_RECORD_SECONDS / block_duration))
+    pre_roll_blocks: int = max(1, int(config.PRE_ROLL_SECONDS / block_duration))
+    min_speech_blocks: int = max(1, int(config.MIN_SPEECH_SECONDS / block_duration))
 
-    max_blocks: int = max(
-        1,
-        int(config.MAX_RECORD_SECONDS / block_duration),
-    )
-
-    pre_roll_blocks: int = max(
-        1,
-        int(config.PRE_ROLL_SECONDS / block_duration),
-    )
-
-    min_speech_blocks: int = max(
-        1,
-        int(config.MIN_SPEECH_SECONDS / block_duration),
-    )
-
-    # Храним последние N блоков до начала речи.
-    # Это позволяет не отрезать первые слоги.
-    pre_roll: deque[np.ndarray] = deque(
-        maxlen=pre_roll_blocks
-    )
-
+    pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_blocks)
     frames: list[np.ndarray] = []
 
     has_speech = False
     speech_blocks = 0
     silent_count = 0
+    voiced_blocks = 0
+    max_rms = 0.0
 
-    logger.info("Запись... (говори)")
+    logger.info("[STT] recording started... (говорите)")
 
-    def callback(
-        indata: np.ndarray,
-        frame_count: int,
-        time_info,
-        status,
-    ) -> None:
-        nonlocal has_speech
-        nonlocal speech_blocks
-        nonlocal silent_count
+    def callback(indata: np.ndarray, frame_count: int, time_info, status) -> None:
+        nonlocal has_speech, speech_blocks, silent_count, voiced_blocks, max_rms
 
         if status:
-            logger.warning(
-                "Статус аудио: %s",
-                status,
-            )
+            logger.warning("[STT] Статус аудио: %s", status)
 
         block = indata.copy()
+        rms = float(np.sqrt(np.mean(np.square(block))))
+        max_rms = max(max_rms, rms)
 
-        # RMS лучше подходит для energy-based VAD,
-        # чем abs(indata).mean().
-        rms = float(
-            np.sqrt(
-                np.mean(
-                    np.square(block)
-                )
-            )
-        )
-
-        # ─────────────────────────────────────────────
-        # Ещё не начали запись речи
-        # ─────────────────────────────────────────────
+        if rms >= config.SILENCE_THRESHOLD:
+            voiced_blocks += 1
 
         if not has_speech:
             pre_roll.append(block)
-
             if rms >= config.SILENCE_THRESHOLD:
                 speech_blocks += 1
-
-                # Требуем несколько последовательных
-                # активных блоков, чтобы не реагировать
-                # на случайный щелчок/шум.
                 if speech_blocks >= min_speech_blocks:
                     has_speech = True
-
-                    # Возвращаем pre-roll, чтобы сохранить
-                    # начало фразы.
                     frames.extend(pre_roll)
                     pre_roll.clear()
-
                     frames.append(block)
-
                     silent_count = 0
-
             else:
-                # "Leaky bucket": одиночный короткий провал между
-                # слогами не должен обнулять весь набранный прогресс —
-                # только слегка снижать счётчик. Полный сброс делал
-                # min_speech_blocks практически недостижимым при
-                # естественной речи (подтверждено диагностикой mic_test.py).
                 speech_blocks = max(0, speech_blocks - 1)
-
-        # ─────────────────────────────────────────────
-        # Уже записываем речь
-        # ─────────────────────────────────────────────
-
         else:
             frames.append(block)
-
             if rms >= config.SILENCE_THRESHOLD:
                 silent_count = 0
             else:
                 silent_count += 1
-
-    # ─────────────────────────────────────────────────
-    # Запуск микрофона
-    # ─────────────────────────────────────────────────
 
     try:
         with sd.InputStream(
@@ -222,56 +162,29 @@ def _record_audio() -> np.ndarray:
         ):
             for _ in range(max_blocks):
                 time.sleep(block_duration)
-
-                if (
-                    has_speech
-                    and silent_count >= silence_blocks
-                ):
-                    logger.info(
-                        "Тишина обнаружена — останавливаю запись"
-                    )
+                if has_speech and silent_count >= silence_blocks:
+                    logger.info("[STT] Тишина обнаружена — останавливаю запись")
                     break
-
-            else:
-                logger.warning(
-                    "Достигнут лимит записи (%dс)",
-                    config.MAX_RECORD_SECONDS,
-                )
-
     except Exception as exc:
-        logger.error(
-            "Ошибка записи с микрофона: %s",
-            exc,
-        )
-        return np.array(
-            [],
-            dtype=np.float32,
-        )
+        logger.error("[STT] Ошибка записи с микрофона: %s", exc)
+        return np.array([], dtype=np.float32)
 
-    # ─────────────────────────────────────────────────
-    # Проверка результата
-    # ─────────────────────────────────────────────────
-
-    if not frames:
-        logger.info("Речь не обнаружена")
-
-        return np.array(
-            [],
-            dtype=np.float32,
-        )
-
-    audio = np.concatenate(
-        frames,
-        axis=0,
-    ).flatten()
-
-    duration = len(audio) / sample_rate
+    total_duration = (len(frames) * block_size) / sample_rate if frames else 0.0
+    voiced_duration = voiced_blocks * block_duration
 
     logger.info(
-        "Записано %.1fс аудио",
-        duration,
+        "[STT] recording=%.2fs voiced=%.2fs max_rms=%.5f speech_detected=%s",
+        total_duration,
+        voiced_duration,
+        max_rms,
+        has_speech,
     )
 
+    if not has_speech or voiced_duration < config.MIN_VOICED_AUDIO_SECONDS:
+        logger.info("[STT] rejected: no_speech")
+        return np.array([], dtype=np.float32)
+
+    audio = np.concatenate(frames, axis=0).flatten()
     return audio
 
 
@@ -399,71 +312,75 @@ def record_and_transcribe() -> str:
 
 def transcribe_file(path: str) -> str:
     """
-    Распознать речь из аудиофайла.
-
-    Args:
-        path: Путь к WAV/MP3 файлу.
-
-    Returns:
-        Распознанный текст.
+    Распознать речь из аудиофайла с проверкой метрик качества Whisper.
     """
-
     model = _get_model()
 
-    logger.info(
-        "Whisper: начинаю распознавание файла %s",
+    segments_gen, info = model.transcribe(
         path,
-    )
-
-    segments, info = model.transcribe(
-        path,
-
-        # Агата ориентирована на русский язык.
         language="ru",
-
-        # beam_size=5 — стабильный выбор для RTX 4050 (не медленнее beam_size=1
-        # на больших моделях, но точнее).
         beam_size=5,
         temperature=0.0,
-
-        # initial_prompt — подсказка Whisper о домене и имени ассистента.
-        # Это улучшает распознавание собственных имён и команд.
-        initial_prompt="Агата, открой, закрой, запусти, найди. Привет, Агата!",
-
-        # Дополнительный VAD внутри Whisper.
+        initial_prompt=(
+            "Агата, открой хром, закрой хром, открой ютуб, "
+            "напомни мне, сколько времени, посчитай."
+        ),
         vad_filter=True,
         vad_parameters={
             "min_silence_duration_ms": 500,
             "speech_pad_ms": 200,
         },
-
-        # Не переносим предыдущий контекст между сегментами.
-        # Это уменьшает вероятность галлюцинаций.
         condition_on_previous_text=False,
-
-        # Настройки фильтрации плохого распознавания.
         no_speech_threshold=0.6,
         compression_ratio_threshold=2.4,
         log_prob_threshold=-1.0,
     )
 
-    text_parts: list[str] = []
+    segment_list = list(segments_gen)
+    if not segment_list:
+        logger.info("[STT] rejected: empty_whisper")
+        return ""
 
-    for segment in segments:
-        segment_text = segment.text.strip()
+    text_parts = [s.text.strip() for s in segment_list if s.text.strip()]
+    raw_text = " ".join(text_parts).strip()
 
-        if segment_text:
-            text_parts.append(segment_text)
+    if not raw_text:
+        logger.info("[STT] rejected: empty_text")
+        return ""
 
-    text = " ".join(
-        text_parts
-    ).strip()
+    avg_no_speech = sum(s.no_speech_prob for s in segment_list) / len(segment_list)
+    avg_logprob = sum(s.avg_logprob for s in segment_list) / len(segment_list)
+    max_compression = max(s.compression_ratio for s in segment_list)
 
     logger.info(
-        "Распознано: '%s' (язык: %s, вероятность: %.2f)",
-        text[:200],
-        info.language,
-        info.language_probability,
+        "[STT] whisper=\"%s\" no_speech_prob=%.2f avg_logprob=%.2f compression_ratio=%.2f",
+        raw_text,
+        avg_no_speech,
+        avg_logprob,
+        max_compression,
     )
 
-    return text
+    if avg_no_speech > config.WHISPER_MAX_NO_SPEECH_PROB:
+        logger.info("[STT] rejected: high_no_speech_prob (%.2f > %.2f)", avg_no_speech, config.WHISPER_MAX_NO_SPEECH_PROB)
+        return ""
+
+    if avg_logprob < config.WHISPER_MIN_AVG_LOGPROB:
+        logger.info("[STT] rejected: low_avg_logprob (%.2f < %.2f)", avg_logprob, config.WHISPER_MIN_AVG_LOGPROB)
+        return ""
+
+    if max_compression > 2.4 or max_compression < 0.5:
+        logger.info("[STT] rejected: abnormal_compression_ratio (%.2f)", max_compression)
+        return ""
+
+    hallucination_blacklist = (
+        "субтитры", "продолжение следует", "редактор субтитров",
+        "спасибо за просмотр", "благодарим за просмотр", "подписывайтесь",
+        "переводчик", "академия", "создатель субтитров", "работа над видео",
+    )
+    raw_text_lower = raw_text.lower()
+    if any(phrase in raw_text_lower for phrase in hallucination_blacklist):
+        logger.info("[STT] rejected: hallucination_blacklist ('%s')", raw_text)
+        return ""
+
+    logger.info("[STT] accepted: '%s'", raw_text)
+    return raw_text

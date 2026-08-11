@@ -99,7 +99,7 @@ def search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
     conn = _get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, text, embedding, created_at, tags FROM diary WHERE consolidated = 0"
+            "SELECT id, text, embedding, created_at, tags FROM diary"
         ).fetchall()
     finally:
         conn.close()

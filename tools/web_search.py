@@ -22,6 +22,19 @@ except ImportError:
         DDGS = None  # type: ignore[assignment]
 
 
+# Домены-агрегаторы "пробить человека" и подобный SEO-мусор — не показывать
+# как источник фактов, особенно про частных лиц.
+_BLOCKED_DOMAINS = (
+    "poiski.pro",
+    "nashi-predki.ru",
+    # добавляй сюда по мере обнаружения новых мусорных источников
+)
+
+
+def _is_blocked(url: str) -> bool:
+    return any(domain in url for domain in _BLOCKED_DOMAINS)
+
+
 def web_search(query: str) -> str:
     """
     Ищет в интернете актуальную информацию по запросу.
@@ -46,6 +59,10 @@ def web_search(query: str) -> str:
             title = str(r.get("title", "")).strip()
             snippet = str(r.get("body", "")).strip()[:MAX_SNIPPET_CHARS]
             url = str(r.get("href", "")).strip()
+
+            if _is_blocked(url):  # НОВОЕ — пропускаем известный мусор
+                continue
+
             item_size = len(title) + len(snippet) + len(url)
             if compact_results and context_size + item_size > MAX_CONTEXT_CHARS:
                 break

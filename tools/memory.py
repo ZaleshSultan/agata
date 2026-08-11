@@ -1,126 +1,48 @@
-"""
-Инструменты памяти — дневник Агаты.
-
-write_diary: сохранить новый факт/событие в долгосрочную память.
-search_diary: семантический поиск по прошлым записям.
-
-Побочные эффекты:
-- write_diary: запись в SQLite + запрос эмбеддинга через Ollama.
-- search_diary: чтение SQLite + запрос эмбеддинга через Ollama.
-"""
+"""Backward-compatible memory tools backed by MemoryManager."""
 
 import logging
 
-from llm import LocalLLM
-from memory import diary
+from memory import MemoryManager
+from memory.models import MemorySource
 
 logger = logging.getLogger(__name__)
-
-# Ленивая инициализация LLM-клиента для эмбеддингов
-_llm: LocalLLM | None = None
+_memory: MemoryManager | None = None
 
 
-def _get_llm() -> LocalLLM:
-    """Получить или создать экземпляр LLM-клиента."""
-    global _llm
-    if _llm is None:
-        _llm = LocalLLM()
-    return _llm
+def _get_memory() -> MemoryManager:
+    global _memory
+    if _memory is None:
+        _memory = MemoryManager()
+    return _memory
 
 
 def write_diary(entry: str) -> str:
-    """
-    Записать важный факт или событие в дневник.
-
-    Args:
-        entry: Текст записи для дневника.
-
-    Returns:
-        Подтверждение записи.
-    """
+    """Compatibility tool: explicitly persist a user fact or event."""
     try:
-        embedding = _get_llm().embed(entry)
-        entry_id = diary.add_entry(text=entry, embedding=embedding)
-        result = f"Записано в дневник (id={entry_id}): {entry[:100]}"
-        logger.info(result)
-        return result
+        memory = _get_memory().remember(entry, importance=.95, confidence=.98, source=MemorySource.USER_EXPLICIT)
+        return f"Записано в память (id={memory.id}): {memory.content[:100]}"
     except Exception as exc:
-        error_msg = f"Ошибка записи в дневник: {exc}"
-        logger.error(error_msg)
-        return error_msg
+        logger.exception("[MEMORY] write_diary failed")
+        return f"Ошибка записи в память: {exc}"
 
 
 def search_diary(query: str) -> str:
-    """
-    Поиск по дневнику — найти релевантные прошлые записи.
-
-    Args:
-        query: Поисковый запрос (вопрос, тема, ключевые слова).
-
-    Returns:
-        Найденные записи или сообщение "ничего не найдено".
-    """
+    """Compatibility tool: explicit lookup through MemoryManager.recall()."""
     try:
-        query_embedding = _get_llm().embed(query)
-        results = diary.search(query_embedding=query_embedding, top_k=5)
+        results = _get_memory().recall(query, top_k=5)
         if not results:
-            return "В дневнике ничего не найдено по этому запросу."
-
-        lines: list[str] = []
-        for i, r in enumerate(results, 1):
-            lines.append(
-                f"{i}. [{r['created_at']}] (схожесть: {r['similarity']}) {r['text']}"
-            )
-        result = "\n".join(lines)
-        logger.info("Найдено %d записей по запросу '%s'", len(results), query[:50])
-        return result
+            return "В памяти ничего не найдено по этому запросу."
+        return "\n".join(f"{i}. [{m.created_at}] (score: {m.score:.3f}) {m.content}" for i, m in enumerate(results, 1))
     except Exception as exc:
-        error_msg = f"Ошибка поиска в дневнике: {exc}"
-        logger.error(error_msg)
-        return error_msg
+        logger.exception("[MEMORY] search_diary failed")
+        return f"Ошибка поиска в памяти: {exc}"
 
 
-# ── JSON Schema для tool calling ──────────────────────────────────────────
-
-WRITE_DIARY_DEFINITION: dict = {
-    "function": {
-        "name": "write_diary",
-        "description": (
-            "Записать важный факт, событие или информацию о пользователе в дневник "
-            "(долгосрочную память). Используй, когда пользователь сообщает что-то, "
-            "что стоит запомнить: предпочтения, задачи, события, факты о себе."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entry": {
-                    "type": "string",
-                    "description": "Текст записи для дневника. Формулируй кратко и фактологично.",
-                },
-            },
-            "required": ["entry"],
-        },
-    },
+WRITE_DIARY_DEFINITION = {
+    "function": {"name": "write_diary", "description": "Сохранить важный факт в долгосрочную память.", "parameters": {"type": "object", "properties": {"entry": {"type": "string"}}, "required": ["entry"]}},
     "requires_confirmation": False,
 }
-
-SEARCH_DIARY_DEFINITION: dict = {
-    "function": {
-        "name": "search_diary",
-        "description": (
-            "Поиск по дневнику (долгосрочной памяти). Используй, когда нужно вспомнить "
-            "прошлые договорённости, факты о пользователе, записанные события или предпочтения."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Поисковый запрос — что нужно найти в дневнике.",
-                },
-            },
-            "required": ["query"],
-        },
-    },
+SEARCH_DIARY_DEFINITION = {
+    "function": {"name": "search_diary", "description": "Явно найти сохранённые воспоминания.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
     "requires_confirmation": False,
 }

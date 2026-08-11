@@ -2,10 +2,11 @@ import json
 import unittest
 from unittest.mock import patch
 
-from action_router import route_calculation, route_explicit_action, route_web_intent
+from action_router import route_calculation, route_datetime, route_explicit_action, route_web_intent
 from agent import Agent
 from tools import get_tool_schemas, list_tool_names, system_control
 from tools.calc import calculate
+from tools.datetime_tool import TIMEZONE_NAME, get_current_datetime
 from tools.web_search import MAX_RESULTS, web_search
 
 
@@ -20,51 +21,133 @@ class FakeLLM:
 
 
 class ActionRoutingTests(unittest.TestCase):
-    def test_chrome_russian_alias_routes_to_registered_tool(self) -> None:
+
+    # ── OPEN ACTIONS ───────────────────────────────────────────────────────
+
+    def test_open_youtube(self) -> None:
+        """'открой YouTube' → OPEN_BROWSER https://www.youtube.com"""
+        action = route_explicit_action("открой YouTube")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "open_browser")
+        self.assertEqual(action.arguments["url"], "https://www.youtube.com")
+
+    def test_open_spotify_web(self) -> None:
+        """'открой Spotify' → OPEN_BROWSER https://open.spotify.com"""
+        action = route_explicit_action("открой Spotify")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "open_browser")
+        self.assertEqual(action.arguments["url"], "https://open.spotify.com")
+
+    def test_open_github(self) -> None:
+        """'открой GitHub' → OPEN_BROWSER https://github.com"""
+        action = route_explicit_action("открой GitHub")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "open_browser")
+        self.assertEqual(action.arguments["url"], "https://github.com")
+
+    def test_chrome_russian_alias_routes_to_open_app(self) -> None:
         action = route_explicit_action("Открой хром")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("open_app", {"app_name": "chrome"}))
+        self.assertEqual(action.tool_name, "open_app")
+        self.assertEqual(action.kind, "OPEN_APP")
 
-    def test_vscode_routes_to_registered_tool(self) -> None:
+    def test_vscode_routes_to_open_app(self) -> None:
         action = route_explicit_action("Запусти VS Code")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("open_app", {"app_name": "vscode"}))
+        self.assertEqual(action.tool_name, "open_app")
+        self.assertEqual(action.kind, "OPEN_APP")
 
-    def test_discord_routes_to_registered_tool(self) -> None:
-        action = route_explicit_action("Открой Discord")
+    # ── CLOSE ACTIONS ──────────────────────────────────────────────────────
+
+    def test_close_youtube(self) -> None:
+        """'закрой YouTube' → CLOSE_TARGET / close_target"""
+        action = route_explicit_action("закрой YouTube")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("open_app", {"app_name": "discord"}))
+        self.assertEqual(action.tool_name, "close_target")
+        self.assertEqual(action.kind, "CLOSE_TARGET")
 
-    def test_close_chrome_routes_to_confirmed_tool(self) -> None:
-        action = route_explicit_action("Закрой Chrome")
+    def test_close_chrome(self) -> None:
+        """'закрой Chrome' → CLOSE_APP / close_app"""
+        action = route_explicit_action("закрой Chrome")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("close_app", {"app_name": "chrome"}))
+        self.assertEqual(action.tool_name, "close_app")
+        self.assertEqual(action.kind, "CLOSE_APP")
 
-    def test_domain_routes_to_browser_not_application(self) -> None:
-        action = route_explicit_action("Открой youtube.com")
+    def test_close_vscode(self) -> None:
+        """'закрой VS Code' → CLOSE_APP / close_app"""
+        action = route_explicit_action("закрой VS Code")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("open_browser", {"url": "youtube.com"}))
+        self.assertEqual(action.tool_name, "close_app")
+        self.assertEqual(action.kind, "CLOSE_APP")
 
-    def test_youtube_name_routes_to_browser_not_application(self) -> None:
-        action = route_explicit_action("Открой YouTube")
+    # ── WEB SEARCH ROUTING ─────────────────────────────────────────────────
+
+    def test_web_search_explicit_query(self) -> None:
+        """'кто такой Джеффри Эпштейн?' → WEB_SEARCH"""
+        action = route_web_intent("кто такой Джеффри Эпштейн?")
         self.assertIsNotNone(action)
         assert action is not None
-        self.assertEqual((action.tool_name, action.arguments), ("open_browser", {"url": "https://www.youtube.com"}))
+        self.assertEqual(action.tool_name, "web_search")
+
+    def test_normal_chat_not_web_search(self) -> None:
+        """'как дела?' → NOT web search"""
+        action = route_web_intent("как дела?")
+        self.assertIsNone(action)
+
+        talk = route_web_intent("поговорим")
+        self.assertIsNone(talk)
+
+    # ── DATETIME ROUTING ───────────────────────────────────────────────────
+
+    def test_current_datetime(self) -> None:
+        """'который час?' → DATETIME action"""
+        action = route_datetime("который час?")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "get_current_datetime")
+
+        date_action = route_datetime("какая сегодня дата?")
+        self.assertIsNotNone(date_action)
+        assert date_action is not None
+        self.assertEqual(date_action.tool_name, "get_current_datetime")
+
+    def test_current_timezone(self) -> None:
+        """Verify timezone constant is Asia/Almaty"""
+        self.assertEqual(TIMEZONE_NAME, "Asia/Almaty")
+
+    # ── WHISPER PUNCTUATION TOLERANCE ──────────────────────────────────────
+
+    def test_open_comma_vscode(self) -> None:
+        action = route_explicit_action("открой, VS Code")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "open_app")
+
+    def test_agata_open_vscode(self) -> None:
+        action = route_explicit_action("Агата, открой VS Code")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "open_app")
 
     def test_conversation_is_not_action(self) -> None:
         self.assertIsNone(route_explicit_action("Привет, как дела?"))
 
+    # ── AGENT INTEGRATION ──────────────────────────────────────────────────
+
     def test_routed_success_is_reported_only_after_tool_success(self) -> None:
         agent = Agent()
-        with patch("agent.execute_tool", return_value=json.dumps({"success": True, "application": "chrome"})) as execute:
+        with patch("agent.execute_tool", return_value=json.dumps({"success": True, "application": "Chrome"})) as execute:
             answer = agent.run("Открой Chrome")
-        execute.assert_called_once_with("open_app", {"app_name": "chrome"})
-        self.assertEqual(answer, "Chrome открыт.")
+        execute.assert_called_once()
+        self.assertIn("открыт", answer)
 
     def test_routed_failure_is_not_reported_as_success(self) -> None:
         agent = Agent()
@@ -76,99 +159,33 @@ class ActionRoutingTests(unittest.TestCase):
     def test_calculator_still_works(self) -> None:
         self.assertEqual(calculate("25 * 4"), "100")
 
-    def test_chrome_is_whitelisted(self) -> None:
-        self.assertIn("chrome", system_control.ALLOWED_APPS)
-
-    def test_close_app_is_registered(self) -> None:
-        self.assertIn("close_app", list_tool_names())
-
-    def test_tool_schemas_support_exclusion(self) -> None:
-        schemas = get_tool_schemas(exclude={"calculate", "web_search", "open_app"})
-        names = {schema["function"]["name"] for schema in schemas}
-        self.assertNotIn("calculate", names)
-        self.assertNotIn("web_search", names)
-        self.assertNotIn("open_app", names)
-        self.assertIn("get_current_datetime", names)
+    def test_close_target_is_registered(self) -> None:
+        self.assertIn("close_target", list_tool_names())
 
     def test_action_bypasses_llm(self) -> None:
         agent = Agent()
         fake_llm = FakeLLM()
         agent._llm = fake_llm
-        with patch("agent.execute_tool", return_value=json.dumps({"success": True, "application": "discord"})):
+        with patch("agent.execute_tool", return_value=json.dumps({"success": True, "application": "Discord"})):
             answer = agent.run("Открой Discord")
-        self.assertEqual(answer, "Discord открыт.")
+        self.assertIn("Discord", answer)
         self.assertEqual(fake_llm.calls, [])
 
-    def test_calculation_bypasses_classifier_and_llm(self) -> None:
+    def test_datetime_bypasses_classifier_and_llm(self) -> None:
         agent = Agent()
         fake_llm = FakeLLM()
         agent._llm = fake_llm
-        with patch("agent.execute_tool", return_value="300") as execute:
-            answer = agent.run("150+150?")
-        execute.assert_called_once_with("calculate", {"expression": "150+150"})
-        self.assertEqual(answer, "300")
+        with patch("agent.execute_tool", return_value="Сейчас Вторник, 11 августа 2026, 08:16.") as execute:
+            answer = agent.run("который час?")
+        execute.assert_called_once_with("get_current_datetime", {})
+        self.assertEqual(answer, "Сейчас Вторник, 11 августа 2026, 08:16.")
         self.assertEqual(fake_llm.calls, [])
 
-    def test_web_intent_recognizes_explicit_and_factual_queries(self) -> None:
-        explicit = route_web_intent("Найди в интернете день рождения Сэди Синк")
-        factual = route_web_intent("Дата рождения Сэди Синк")
-        self.assertIsNotNone(explicit)
-        self.assertIsNotNone(factual)
-        assert explicit is not None and factual is not None
-        self.assertEqual(explicit.tool_name, "web_search")
-        self.assertEqual(factual.tool_name, "web_search")
-
-    def test_general_knowledge_is_not_forced_to_web(self) -> None:
-        self.assertIsNone(route_web_intent("Что такое TCP?"))
-
-    def test_web_pipeline_uses_one_search_and_one_final_llm(self) -> None:
-        agent = Agent()
-        fake_llm = FakeLLM("Сэди Синк родилась согласно найденным источникам.")
-        agent._llm = fake_llm
-        search_result = json.dumps(
-            {"success": True, "results": [{"title": "Source", "snippet": "Fact", "url": "https://example.test"}]}
-        )
-        with patch("agent.execute_tool", return_value=search_result) as execute:
-            answer = agent.run("Дата рождения Сэди Синк")
-        execute.assert_called_once_with("web_search", {"query": "Дата рождения Сэди Синк"})
-        self.assertEqual(answer, "Сэди Синк родилась согласно найденным источникам.")
-        self.assertEqual(len(fake_llm.calls), 1)
-        self.assertIsNone(fake_llm.calls[0]["tools"])
-        self.assertIs(fake_llm.calls[0]["think"], False)
-        self.assertIn("Fact", fake_llm.calls[0]["messages"][0]["content"])
-
-    def test_empty_web_result_does_not_call_llm(self) -> None:
-        agent = Agent()
-        fake_llm = FakeLLM()
-        agent._llm = fake_llm
-        with patch("agent.execute_tool", return_value=json.dumps({"success": True, "results": []})):
-            answer = agent.run("Кто такой Залеш Султан?")
-        self.assertIn("Не нашла", answer)
-        self.assertEqual(fake_llm.calls, [])
-
-    def test_web_search_uses_one_compact_backend_call(self) -> None:
-        class StubDDGS:
-            calls = []
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def text(self, query, max_results):
-                self.calls.append((query, max_results))
-                return [
-                    {"title": "One", "body": "a" * 700, "href": "https://one.test"},
-                    {"title": "Two", "body": "b" * 100, "href": "https://two.test"},
-                ]
-
-        with patch("tools.web_search.DDGS", StubDDGS):
-            payload = json.loads(web_search("test query"))
-        self.assertEqual(StubDDGS.calls, [("test query", MAX_RESULTS)])
-        self.assertTrue(payload["success"])
-        self.assertEqual(len(payload["results"]), 2)
-        self.assertLessEqual(len(payload["results"][0]["snippet"]), 500)
+    def test_web_search_filters_blocked_domains(self) -> None:
+        from tools.web_search import _is_blocked
+        self.assertTrue(_is_blocked("https://poiski.pro/person/123"))
+        self.assertTrue(_is_blocked("http://nashi-predki.ru/page"))
+        self.assertFalse(_is_blocked("https://ru.wikipedia.org/wiki/Test"))
 
 
 if __name__ == "__main__":

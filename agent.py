@@ -15,9 +15,15 @@ from time import perf_counter
 from typing import Any
 
 import config
-from action_router import RoutedAction, route_calculation, route_explicit_action, route_web_intent
+from action_router import (
+    RoutedAction,
+    route_calculation,
+    route_datetime,
+    route_explicit_action,
+    route_web_intent,
+)
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
-from memory import working_memory
+from memory import MemoryManager
 from prompts import build_agent_system_prompt, build_web_system_prompt
 from tools import get_tool_schemas, execute_tool, requires_confirmation
 
@@ -27,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Больше — лучше помнит контекст разговора, но длиннее промпт → медленнее
 # инференс на слабом железе. 5 пар — разумный баланс для голосового
 # ассистент реального времени при num_ctx=8192.
-MAX_HISTORY_TURNS: int = 5
+MAX_HISTORY_TURNS: int = config.MEMORY_RECENT_CONVERSATION_TURNS
 
 
 # Паттерны, однозначно указывающие на сложный запрос — thinking нужен
@@ -53,8 +59,10 @@ _ROUTER_HANDLED_TOOLS: set[str] = {
     "calculate",
     "open_app",
     "close_app",
+    "close_target",
     "open_browser",
     "web_search",
+    "get_current_datetime",
 }
 
 class Agent:
@@ -69,6 +77,7 @@ class Agent:
 
     def __init__(self) -> None:
         self._llm: LocalLLM | None = None
+        self.memory = MemoryManager()
         # Короткая история диалога: только чистые пары user/assistant,
         # БЕЗ внутренних tool_calls шагов — они нужны только внутри
         # одного agent loop, не в долгой истории.
@@ -102,6 +111,11 @@ class Agent:
         max_messages = MAX_HISTORY_TURNS * 2
         if len(self.history) > max_messages:
             self.history = self.history[-max_messages:]
+        # Memory is best-effort: a storage/extraction outage must never suppress an answer.
+        try:
+            self.memory.extract(user_text, answer)
+        except Exception as exc:
+            logger.warning("[MEMORY] turn extraction failed: %s", exc)
         return answer
 
     @staticmethod
@@ -134,7 +148,8 @@ class Agent:
     def _run_routed_action(self, user_text: str, action: RoutedAction) -> tuple[str, float]:
         """Execute a deterministic local action and render its verified result."""
         logger.info("Action router: %s", action.kind)
-        logger.info("application/url: %s", next(iter(action.arguments.values())))
+        if action.arguments:
+            logger.info("application/url: %s", next(iter(action.arguments.values())))
 
         if requires_confirmation(action.tool_name) and not self._ask_confirmation(action.tool_name, action.arguments):
             return self._remember_turn(user_text, "Действие отменено."), 0.0
@@ -145,30 +160,49 @@ class Agent:
         tool_elapsed = perf_counter() - tool_started_at
         failure = self._execution_failure(action.tool_name, result)
         if failure:
+            if failure == "target_not_individually_closeable":
+                target_name = action.arguments.get("target", "эту вкладку")
+                return self._remember_turn(
+                    user_text,
+                    f"Не могу закрыть отдельную вкладку {target_name} в браузере. Вы можете закрыть браузер целиком командой 'закрой Chrome'."
+                ), tool_elapsed
             logger.info("Tool result: failure; %s", failure)
             return self._remember_turn(user_text, f"Не удалось выполнить действие: {failure}"), tool_elapsed
 
         payload = self._tool_payload(result)
-        if action.tool_name in {"open_app", "close_app", "open_browser"}:
+        if action.tool_name in {"open_app", "close_app", "open_browser", "close_target"}:
             if payload is None or payload.get("success") is not True:
-                error = f"Инструмент {action.tool_name} не подтвердил успешное выполнение."
+                error = payload.get("error") if payload else f"Инструмент {action.tool_name} не подтвердил успешное выполнение."
+                if error == "target_not_individually_closeable":
+                    target_name = action.arguments.get("target", "эту вкладку")
+                    return self._remember_turn(
+                        user_text,
+                        f"Не могу закрыть отдельную вкладку {target_name} в браузере. Вы можете закрыть браузер целиком командой 'закрой Chrome'."
+                    ), tool_elapsed
                 logger.error("Tool result: unverified success for %s", action.tool_name)
                 return self._remember_turn(user_text, f"Не удалось выполнить действие: {error}"), tool_elapsed
 
         logger.info("Tool result: success")
         if action.tool_name == "open_app":
-            app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
+            app = payload.get("application") if payload else None
+            if not app:
+                app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
             return self._remember_turn(user_text, f"{app} открыт."), tool_elapsed
-        if action.tool_name == "close_app":
-            app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
+        if action.tool_name in {"close_app", "close_target"}:
+            app = payload.get("application") if payload else None
+            if not app:
+                raw_arg = action.arguments.get("app_name") or action.arguments.get("target") or "Приложение"
+                app = _APP_DISPLAY_NAMES.get(raw_arg.lower(), raw_arg)
             return self._remember_turn(user_text, f"{app} закрыт."), tool_elapsed
         if action.tool_name == "open_browser":
             return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере."), tool_elapsed
+        if action.tool_name == "get_current_datetime":
+            return self._remember_turn(user_text, result), tool_elapsed
         if result.startswith("Ошибка"):
             return self._remember_turn(user_text, f"Не удалось выполнить вычисление: {result}"), tool_elapsed
         return self._remember_turn(user_text, result), tool_elapsed
 
-    def _run_routed_web(self, user_text: str, action: RoutedAction) -> tuple[str, float, float]:
+    def _run_routed_web(self, user_text: str, action: RoutedAction, memory_context: dict[str, str]) -> tuple[str, float, float]:
         """Run one web search followed by exactly one LLM synthesis call."""
         logger.info("Web router: %s", action.kind)
         logger.info("Tool call: %s(%s)", action.tool_name, json.dumps(action.arguments, ensure_ascii=False))
@@ -191,7 +225,11 @@ class Agent:
             )
 
         search_context = json.dumps(results, ensure_ascii=False)
-        web_system_prompt = build_web_system_prompt(search_context)
+        web_system_prompt = build_web_system_prompt(
+            search_context,
+            memory_context.get("relevant_memories", ""),
+            memory_context.get("current_datetime", ""),
+        )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": web_system_prompt},
             {"role": "user", "content": user_text},
@@ -242,6 +280,16 @@ class Agent:
         started_at = perf_counter()
         router_started_at = perf_counter()
 
+        # Every route starts with the same best-effort memory lifecycle.  Routed
+        # actions may not use it for reasoning, but recall and failure isolation
+        # are intentional rather than accidental CHAT-only behaviour.
+        try:
+            memory_context = self.memory.prepare_context(user_text)
+        except Exception as exc:
+            logger.warning("[MEMORY] context preparation failed: %s", exc)
+            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
+
+        # 1. CLOSE / OPEN / SYSTEM ACTION
         action = route_explicit_action(user_text)
         if action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -249,6 +297,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
+        # 2. CALCULATION
         calculation = route_calculation(user_text)
         if calculation is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -257,10 +306,20 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
+        # 3. DATETIME
+        datetime_action = route_datetime(user_text)
+        if datetime_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", datetime_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 4. WEB SEARCH
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at
-            answer, search_elapsed, synthesis_elapsed = self._run_routed_web(user_text, web_action)
+            answer, search_elapsed, synthesis_elapsed = self._run_routed_web(user_text, web_action, memory_context)
             self._log_perf(
                 started_at,
                 router=router_elapsed,
@@ -276,18 +335,23 @@ class Agent:
         llm = self._get_llm()
         use_thinking = self._decide_thinking(user_text)
 
-        working_mem = working_memory.read()
-        system_content = build_agent_system_prompt(working_mem)
+        working_mem = memory_context["working_memory"]
+        system_content = build_agent_system_prompt(
+            working_mem,
+            memory_context["relevant_memories"],
+            memory_context["current_datetime"],
+        )
 
         # ── Собираем messages: system + история диалога + текущая реплика ──
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         messages.extend(self.history)  # прошлые чистые пары user/assistant
         messages.append({"role": "user", "content": user_text})
         logger.info(
-            "LLM context: messages=%d history_messages=%d working_memory_chars=%d",
+            "LLM context: messages=%d history_messages=%d working_memory_chars=%d relevant_memory_chars=%d",
             len(messages),
             len(self.history),
             len(working_mem),
+            len(memory_context["relevant_memories"]),
         )
 
         tool_schemas = get_tool_schemas(exclude=_ROUTER_HANDLED_TOOLS)

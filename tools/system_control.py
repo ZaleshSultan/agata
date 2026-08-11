@@ -45,7 +45,11 @@ ALLOWED_APPS: dict[str, tuple[AppCommand, ...]] = {
 
 _PROCESS_NAMES = {
     "chrome": "chrome.exe",
+    "google chrome": "chrome.exe",
     "vscode": "Code.exe",
+    "vs code": "Code.exe",
+    "visual studio code": "Code.exe",
+    "code": "Code.exe",
     "discord": "Discord.exe",
     "telegram": "Telegram.exe",
     "notepad": "notepad.exe",
@@ -75,47 +79,113 @@ def open_browser(url: str) -> str:
     """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    logger.info("[TOOL] open_browser('%s')", url)
     try:
         opened = webbrowser.open(url)
         if not opened:
+            logger.info("[TOOL] failed: Browser failed to open URL")
             return _tool_result(False, url=url, error="Браузер не подтвердил открытие URL.")
+        logger.info("[TOOL] success")
         return _tool_result(True, url=url)
     except Exception as e:
-        logger.error(f"Ошибка открытия браузера: {e}")
+        logger.error(f"[TOOL] failed: {e}")
         return _tool_result(False, url=url, error=f"Не удалось открыть браузер: {e}")
 
 
-def open_app(app_name: str) -> str:
+def open_app(app_name: str, resolved_target: str | None = None) -> str:
     """
-    Запускает приложение из белого списка.
-    Приложений вне списка запустить нельзя — это осознанное ограничение.
+    Запускает приложение по имени из списка или по динамически найденному пути/ярлыку.
+
+    Args:
+        app_name: Имя приложения (каноническое или display name).
+        resolved_target: Доверенный путь к exe/lnk от target_resolver (необязательно).
+                         Если передан и файл существует — запуск без повторного поиска.
     """
-    app_name = app_name.lower().strip()
-    if app_name not in ALLOWED_APPS:
-        return f"Приложение '{app_name}' не в белом списке. Доступны: {', '.join(ALLOWED_APPS.keys())}"
-    command = _resolve_allowed_app(app_name)
-    if command is None:
-        error = f"Исполняемый файл для '{app_name}' не найден в разрешённых путях."
-        logger.error(error)
-        return _tool_result(False, application=app_name, error=error)
-    try:
-        subprocess.Popen(command)
-        return _tool_result(True, application=app_name)
-    except Exception as e:
-        logger.error(f"Ошибка запуска приложения {app_name}: {e}")
-        return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {e}")
+    app_key = app_name.lower().strip()
+    logger.info("[TOOL] open_app('%s', resolved_target='%s')", app_name, resolved_target)
+
+    # 0. Если путь уже найден target_resolver'ом — используем его напрямую
+    if resolved_target:
+        target_path = Path(resolved_target)
+        if target_path.exists():
+            try:
+                if target_path.suffix.lower() == ".lnk":
+                    os.startfile(str(target_path))
+                else:
+                    subprocess.Popen([str(target_path)])
+                logger.info("[TOOL] success (resolved_target)")
+                return _tool_result(True, application=app_name)
+            except Exception as e:
+                try:
+                    os.startfile(str(target_path))
+                    logger.info("[TOOL] success (resolved_target via startfile)")
+                    return _tool_result(True, application=app_name)
+                except Exception as inner_e:
+                    logger.error("[TOOL] failed (resolved_target): %s", inner_e)
+                    return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {inner_e}")
+        else:
+            logger.warning("[TOOL] resolved_target path does not exist: '%s', falling through", resolved_target)
+
+    # 1. Если передано известное приложение из белого списка
+    if app_key in ALLOWED_APPS:
+        command = _resolve_allowed_app(app_key)
+        if command is not None:
+            try:
+                subprocess.Popen(command)
+                logger.info("[TOOL] success")
+                return _tool_result(True, application=app_name)
+            except Exception as e:
+                logger.error(f"[TOOL] failed: {e}")
+                return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {e}")
+
+    # 2. Если передан прямой путь или ярлык (.lnk / .exe)
+    target_path = Path(app_name)
+    if target_path.exists():
+        try:
+            os.startfile(str(target_path))
+            logger.info("[TOOL] success")
+            return _tool_result(True, application=target_path.stem)
+        except Exception as e:
+            logger.error(f"[TOOL] failed: {e}")
+            return _tool_result(False, application=app_name, error=f"Не удалось запустить {app_name}: {e}")
+
+    # 3. Динамический поиск через target_resolver
+    from target_resolver import resolve_target
+    resolved = resolve_target(app_name)
+    if resolved is not None:
+        if resolved.kind == "app":
+            try:
+                os.startfile(resolved.target)
+                logger.info("[TOOL] success")
+                return _tool_result(True, application=resolved.display_name)
+            except Exception as e:
+                try:
+                    subprocess.Popen([resolved.target])
+                    logger.info("[TOOL] success")
+                    return _tool_result(True, application=resolved.display_name)
+                except Exception as inner_e:
+                    logger.error("[TOOL] failed: %s", inner_e)
+                    return _tool_result(False, application=app_name, error=f"Не удалось открыть {app_name}: {inner_e}")
+        elif resolved.kind == "browser":
+            return open_browser(resolved.target)
+
+    error = f"Приложение '{app_name}' не найдено на устройстве."
+    logger.error("[TOOL] failed: %s", error)
+    return _tool_result(False, application=app_name, error=error)
 
 
-def close_app(app_name: str) -> str:
-    """Close an application from the same whitelist after user confirmation."""
-    app_name = app_name.lower().strip()
-    process_name = _PROCESS_NAMES.get(app_name)
-    if process_name is None:
-        return _tool_result(
-            False,
-            application=app_name,
-            error=f"Приложение '{app_name}' не в белом списке.",
-        )
+def close_app(app_name: str, resolved_target: str | None = None) -> str:
+    """Закрыть приложение по имени процесса или найденному пути."""
+    app_key = app_name.lower().strip()
+    logger.info("[CLOSE] target='%s'", app_name)
+
+    process_name = _PROCESS_NAMES.get(app_key)
+    if not process_name and resolved_target:
+        stem = Path(resolved_target).stem.lower()
+        process_name = _PROCESS_NAMES.get(stem, f"{stem}.exe" if not stem.endswith(".exe") else stem)
+
+    if not process_name:
+        process_name = f"{app_key}.exe"
 
     try:
         completed = subprocess.run(
@@ -128,14 +198,34 @@ def close_app(app_name: str) -> str:
             check=False,
         )
     except Exception as exc:
-        logger.error("Ошибка закрытия приложения %s: %s", app_name, exc)
+        logger.error("[CLOSE] target='%s' result=failed (%s)", app_name, exc)
         return _tool_result(False, application=app_name, error=f"Не удалось закрыть {app_name}: {exc}")
 
     if completed.returncode == 0:
+        logger.info("[CLOSE] target='%s' result=success", app_name)
         return _tool_result(True, application=app_name)
+
     details = (completed.stderr or completed.stdout).strip() or "Процесс не найден или не завершился."
-    logger.error("Не удалось закрыть %s: %s", app_name, details)
+    logger.error("[CLOSE] target='%s' result=failed (%s)", app_name, details)
     return _tool_result(False, application=app_name, error=details)
+
+
+def close_target(target: str, kind: str = "browser", url: str = "") -> str:
+    """
+    Безопасное закрытие цели.
+    Если это веб-сайт в браузере и отдельную вкладку закрыть нельзя —
+    возвращает результат target_not_individually_closeable.
+    """
+    logger.info("[CLOSE] target='%s'", target)
+    if kind == "browser":
+        logger.info("[CLOSE] target='%s' result=failed (target_not_individually_closeable)", target)
+        return _tool_result(
+            False,
+            target=target,
+            error="target_not_individually_closeable",
+            details="Управление отдельными вкладками браузера не поддерживается. Вы можете закрыть браузер целиком командой 'закрой Chrome'.",
+        )
+    return close_app(target)
 
 
 def list_removable_drives() -> str:
@@ -211,6 +301,10 @@ OPEN_APP_DEFINITION: dict = {
                     "type": "string",
                     "description": "Имя программы для запуска из белого списка (например, 'chrome', 'vscode', 'discord', 'telegram').",
                 },
+                "resolved_target": {
+                    "type": "string",
+                    "description": "Доверенный путь к exe/lnk от target_resolver. Используется только action router'ом.",
+                },
             },
             "required": ["app_name"],
         },
@@ -234,6 +328,32 @@ CLOSE_APP_DEFINITION: dict = {
         },
     },
     "requires_confirmation": True,
+}
+
+CLOSE_TARGET_DEFINITION: dict = {
+    "function": {
+        "name": "close_target",
+        "description": "Закрыть целевую программу или сайт.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Имя приложения или сайта для закрытия.",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Тип цели ('browser' или 'app').",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL веб-сайта если доступен.",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    "requires_confirmation": False,
 }
 
 LIST_REMOVABLE_DRIVES_DEFINITION: dict = {

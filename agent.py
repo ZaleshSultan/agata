@@ -5,6 +5,10 @@ Agent loop Агаты.
 с рабочей памятью, короткой историей диалога и инструментами,
 обрабатывает tool calls в цикле, возвращает финальный текстовый ответ.
 
+run() — синхронный режим (как было).
+run_streaming() — потоковый режим: текст LLM стримится через SentenceChunker
+и отправляется в TTS по предложениям.
+
 Принцип: LLM сама решает, какой инструмент вызвать — никакого
 жёсткого if/else роутинга.
 """
@@ -12,7 +16,7 @@ Agent loop Агаты.
 import json
 import logging
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable, Optional
 
 import config
 from action_router import (
@@ -25,6 +29,7 @@ from action_router import (
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
 from memory import MemoryManager
 from prompts import build_agent_system_prompt, build_web_system_prompt
+from sentence_chunker import SentenceChunker
 from tools import get_tool_schemas, execute_tool, requires_confirmation
 
 logger = logging.getLogger(__name__)
@@ -437,3 +442,204 @@ class Agent:
             response=0.0,
         )
         return answer
+
+    # ── Streaming ─────────────────────────────────────────────────────────
+
+    def run_streaming(
+        self,
+        user_text: str,
+        on_sentence: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """
+        Выполнить цикл агента с потоковой отдачей предложений.
+
+        Детерминированные маршруты (открытие/закрытие, калькулятор,
+        дата/время, веб-поиск) работают как прежде — ответ
+        отправляется в on_sentence одной строкой.
+
+        Путь CHAT использует LLM streaming: tool calls обрабатываются
+        через обычный chat() (не стриминг), финальный текстовый
+        ответ стримится через SentenceChunker в on_sentence().
+
+        Args:
+            user_text: Текст пользователя.
+            on_sentence: Коллбэк, вызываемый для каждого готового
+                предложения (tts.enqueue).
+
+        Returns:
+            Полный текст ответа (для истории и памяти).
+        """
+        started_at = perf_counter()
+        router_started_at = perf_counter()
+
+        def _emit(sentence: str) -> None:
+            """Safe callback wrapper."""
+            if on_sentence is not None:
+                try:
+                    on_sentence(sentence)
+                except Exception as exc:
+                    logger.error("[STREAM] on_sentence callback error: %s", exc)
+
+        # Контекст памяти (best-effort)
+        try:
+            memory_context = self.memory.prepare_context(user_text)
+        except Exception as exc:
+            logger.warning("[MEMORY] context preparation failed: %s", exc)
+            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
+
+        # ── 1. Детерминированные маршруты (без стриминга LLM) ────────
+
+        # SYSTEM ACTIONS (open/close)
+        action = route_explicit_action(user_text)
+        if action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            answer, tool_elapsed = self._run_routed_action(user_text, action)
+            _emit(answer)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # CALCULATION
+        calculation = route_calculation(user_text)
+        if calculation is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", calculation.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
+            _emit(answer)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # DATETIME
+        datetime_action = route_datetime(user_text)
+        if datetime_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", datetime_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
+            _emit(answer)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # WEB SEARCH
+        web_action = route_web_intent(user_text)
+        if web_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            answer, search_elapsed, synthesis_elapsed = self._run_routed_web(
+                user_text, web_action, memory_context,
+            )
+            _emit(answer)
+            self._log_perf(
+                started_at,
+                router=router_elapsed,
+                classifier="SKIPPED",
+                web_search=search_elapsed,
+                final_llm=synthesis_elapsed,
+                response=0.0,
+            )
+            return answer
+
+        # ── 2. CHAT/UNKNOWN: direct streaming response (no blocking tools) ──
+
+        router_elapsed = perf_counter() - router_started_at
+        logger.info("Router: CHAT/UNKNOWN (streaming mode)")
+        llm = self._get_llm()
+        use_thinking = self._decide_thinking(user_text)
+
+        working_mem = memory_context["working_memory"]
+        system_content = build_agent_system_prompt(
+            working_mem,
+            memory_context["relevant_memories"],
+            memory_context["current_datetime"],
+        )
+
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+        messages.extend(self.history)
+        messages.append({"role": "user", "content": user_text})
+        logger.info(
+            "LLM context: messages=%d history_messages=%d",
+            len(messages), len(self.history),
+        )
+
+        final_content: str | None = None
+        llm_started_at = perf_counter()
+
+        try:
+            final_content = self._stream_final_response(
+                llm, messages, use_thinking, _emit,
+            )
+            if not final_content:
+                final_content = "Хм, у меня нет ответа на это."
+                _emit(final_content)
+        except OllamaUnavailableError as exc:
+            logger.error("Ollama недоступна для streaming: %s", exc)
+            final_content = f"Извини, не могу связаться с Ollama: {exc}"
+            _emit(final_content)
+
+        llm_elapsed = perf_counter() - llm_started_at
+
+        answer = self._remember_turn(user_text, final_content)
+        self._log_perf(
+            started_at,
+            router=router_elapsed,
+            classifier="SKIPPED",
+            llm=llm_elapsed,
+            tool=0.0,
+            mode="streaming",
+        )
+        return answer
+
+    def _stream_final_response(
+        self,
+        llm: LocalLLM,
+        messages: list[dict[str, Any]],
+        use_thinking: bool,
+        emit: Callable[[str], None],
+    ) -> str:
+        """Потоково получить финальный текстовый ответ от LLM.
+
+        Токены проходят через SentenceChunker, который собирает
+        их в предложения и отправляет через emit() в TTS.
+
+        Returns:
+            Полный накопленный текст ответа.
+        """
+        chunker = SentenceChunker()
+        full_text_parts: list[str] = []
+        llm_stream_started_at = perf_counter()
+        first_chunker_at: float | None = None
+        first_tts_emit_at: float | None = None
+
+        def _chunker_emit(sentence: str) -> None:
+            nonlocal first_tts_emit_at
+            if first_tts_emit_at is None:
+                first_tts_emit_at = perf_counter()
+                logger.info(
+                    "[DIAG AGENT] First sentence emitted to TTS at +%.3fs from LLM stream start",
+                    first_tts_emit_at - llm_stream_started_at,
+                )
+            emit(sentence)
+
+        logger.info("[STREAM] Начало потокового ответа")
+
+        for token in llm.chat_stream(messages, think=use_thinking):
+            if first_chunker_at is None:
+                first_chunker_at = perf_counter()
+                logger.info(
+                    "[DIAG AGENT] First token fed to SentenceChunker at +%.3fs from LLM stream start",
+                    first_chunker_at - llm_stream_started_at,
+                )
+            full_text_parts.append(token)
+
+            # Передаём токен в chunker
+            sentences = chunker.feed(token)
+            for sentence in sentences:
+                _chunker_emit(sentence)
+
+        # Отправляем остаток буфера
+        remainder = chunker.flush()
+        if remainder:
+            _chunker_emit(remainder)
+
+        full_text = "".join(full_text_parts).strip()
+        # Убираем <think> теги из полного текста для истории
+        full_text = LocalLLM._strip_think_tags(full_text)
+        logger.info("[STREAM] Полный ответ: %d символов", len(full_text))
+        return full_text

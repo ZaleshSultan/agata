@@ -2,7 +2,8 @@
 Клиент для Ollama LLM.
 
 Класс LocalLLM инкапсулирует всё взаимодействие с Ollama:
-- chat() — генерация ответа / tool calling через /api/chat
+- chat() — генерация ответа / tool calling через /api/chat (stream=False)
+- chat_stream() — потоковая генерация текста через /api/chat (stream=True)
 - embed() — получение эмбеддингов через /api/embed
 
 Обработка ошибок: таймауты, недоступность сервера, битые tool calls —
@@ -12,7 +13,7 @@
 import json
 import logging
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import requests
 
@@ -147,6 +148,158 @@ class LocalLLM:
         content = self._strip_think_tags(content)
         logger.info("Текстовый ответ (%d символов)", len(content))
         return {"type": "text", "content": content}
+
+    # ── Chat Stream ────────────────────────────────────────────────────
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        think: bool | None = None,
+    ) -> Generator[str, None, None]:
+        """
+        Потоковая генерация текстового ответа от Ollama.
+
+        В отличие от chat(), отдаёт текстовые токены по мере поступления.
+        НЕ поддерживает tool calling — для этого используйте chat().
+
+        Фильтрует содержимое <think>...</think> на лету.
+
+        Args:
+            messages: История сообщений.
+            think: Переопределение режима рассуждений.
+
+        Yields:
+            Текстовые фрагменты ответа.
+
+        Raises:
+            OllamaUnavailableError: Ollama не отвечает.
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "think": think if think is not None else config.ENABLE_THINKING,
+            "keep_alive": config.OLLAMA_KEEP_ALIVE,
+        }
+        
+        prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        started_at = perf_counter()
+        first_token_at: float | None = None
+        last_token_at: float | None = None
+        token_count = 0
+        char_count = 0
+        done_chunk_data: dict[str, Any] = {}
+
+        logger.info(
+            "[DIAG LLM STREAM] Sending request at %.3f | model=%s | prompt_chars=%d | think=%s",
+            started_at, self.model, prompt_chars, payload.get("think")
+        )
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=self.timeout,
+                stream=True,
+            )
+            resp.raise_for_status()
+        except requests.ConnectionError as exc:
+            raise OllamaUnavailableError(
+                f"Не удалось подключиться к Ollama ({self.base_url}). "
+                "Убедись, что Ollama запущена: ollama serve"
+            ) from exc
+        except requests.Timeout as exc:
+            raise OllamaUnavailableError(
+                f"Ollama не ответила за {self.timeout}с — "
+                "возможно, модель слишком большая или GPU перегружен."
+            ) from exc
+        except requests.HTTPError as exc:
+            raise OllamaUnavailableError(
+                f"Ollama вернула ошибку: {resp.status_code} {resp.text[:200]}"
+            ) from exc
+
+        # Состояние для фильтрации <think> тегов
+        inside_think = False
+
+        try:
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+
+                try:
+                    chunk = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    logger.warning("[LLM STREAM] Невалидный JSON: %s", raw_line[:100])
+                    continue
+
+                # Ollama отдаёт {"done": true} в последнем чанке
+                if chunk.get("done", False):
+                    elapsed = perf_counter() - started_at
+                    prompt_eval_ns = chunk.get("prompt_eval_duration")
+                    eval_ns = chunk.get("eval_duration")
+                    total_ns = chunk.get("total_duration")
+                    
+                    p_eval_str = f"{prompt_eval_ns / 1_000_000_000:.3f}s" if isinstance(prompt_eval_ns, int) else "N/A"
+                    eval_str = f"{eval_ns / 1_000_000_000:.3f}s" if isinstance(eval_ns, int) else "N/A"
+                    total_str = f"{total_ns / 1_000_000_000:.3f}s" if isinstance(total_ns, int) else f"{elapsed:.3f}s"
+                    ttft_str = f"{first_token_at - started_at:.3f}s" if first_token_at is not None else "N/A"
+
+                    logger.info(
+                        "[PERF] ollama_stream http=%.3fs TTFT=%s prompt_eval=%s eval=%s total=%s tokens=%d chars=%d",
+                        elapsed, ttft_str, p_eval_str, eval_str, total_str, token_count, char_count,
+                    )
+                    break
+
+                message = chunk.get("message", {})
+                content = message.get("content", "")
+                if not content:
+                    continue
+
+                if first_token_at is None:
+                    first_token_at = perf_counter()
+                    ttft = first_token_at - started_at
+                    logger.info("[LLM STREAM] first token received after %.3fs | TTFT=%.3fs", ttft, ttft)
+
+                token_count += 1
+
+                # ── Фильтрация <think>...<think> ──────────────────────
+                filtered = self._filter_stream_think(content, inside_think)
+                text_out, inside_think = filtered
+
+                if text_out:
+                    char_count += len(text_out)
+                    yield text_out
+
+        finally:
+            resp.close()
+
+    @staticmethod
+    def _filter_stream_think(token: str, inside_think: bool) -> tuple[str, bool]:
+        """Отфильтровать <think>...</think> из потокового токена.
+
+        Returns:
+            (filtered_text, new_inside_think_state)
+        """
+        result_parts: list[str] = []
+        i = 0
+
+        while i < len(token):
+            if inside_think:
+                close_pos = token.find("</think>", i)
+                if close_pos == -1:
+                    break  # весь остаток внутри think
+                inside_think = False
+                i = close_pos + len("</think>")
+            else:
+                open_pos = token.find("<think>", i)
+                if open_pos == -1:
+                    result_parts.append(token[i:])
+                    break
+                result_parts.append(token[i:open_pos])
+                inside_think = True
+                i = open_pos + len("<think>")
+
+        return "".join(result_parts), inside_think
 
     # ── Embeddings ─────────────────────────────────────────────────────
 

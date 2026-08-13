@@ -66,6 +66,10 @@ WHISPER_COMPUTE_TYPE: str = "float16"           # float16 на GPU, int8 на CP
 # ── TTS ────────────────────────────────────────────────────────────────────
 TTS_RATE: int = 175                             # Скорость речи pyttsx3 (слов/мин)
 TTS_COOLDOWN_SECONDS: float = 0.5               # Пауза безопасности после озвучивания до включения микрофона
+TTS_ENGINE: str = "pyttsx3"                     # Движок TTS: "pyttsx3" | будущее: "piper", "gpt_sovits"
+TTS_ENABLED: bool = True                        # Мастер-переключатель TTS (False = только текст)
+TTS_MIN_SENTENCE_CHARS: int = 20                # Мин. символов для отправки предложения в TTS
+TTS_QUEUE_MAX_SIZE: int = 50                    # Макс. предложений в очереди TTS
 
 # ── Аудиозапись / STT VAD ──────────────────────────────────────────────────
 

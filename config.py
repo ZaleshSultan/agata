@@ -66,10 +66,15 @@ WHISPER_COMPUTE_TYPE: str = "float16"           # float16 на GPU, int8 на CP
 # ── TTS ────────────────────────────────────────────────────────────────────
 TTS_RATE: int = 175                             # Скорость речи pyttsx3 (слов/мин)
 TTS_COOLDOWN_SECONDS: float = 0.5               # Пауза безопасности после озвучивания до включения микрофона
-TTS_ENGINE: str = "pyttsx3"                     # Движок TTS: "pyttsx3" | будущее: "piper", "gpt_sovits"
+TTS_ENGINE: str = "xtts"                        # Движок TTS: "xtts" | "pyttsx3"
 TTS_ENABLED: bool = True                        # Мастер-переключатель TTS (False = только текст)
 TTS_MIN_SENTENCE_CHARS: int = 20                # Мин. символов для отправки предложения в TTS
 TTS_QUEUE_MAX_SIZE: int = 50                    # Макс. предложений в очереди TTS
+TTS_DEVICE: str = "auto"                        # "auto" | "cuda" | "cpu" — устройство для XTTS
+TTS_LANGUAGE: str = "ru"                        # Язык синтеза для XTTS
+TTS_VOICE_PATH: str = str(BASE_DIR / "voices" / "agata_reference.wav")  # Reference voice для клонирования
+TTS_XTTS_MODEL: str = "tts_models/multilingual/multi-dataset/xtts_v2"   # Модель XTTS
+TTS_FALLBACK_ENGINE: str = "pyttsx3"            # Fallback движок при ошибке primary
 
 # ── Аудиозапись / STT VAD ──────────────────────────────────────────────────
 

@@ -1,35 +1,25 @@
 """
-Синтез речи (Text-to-Speech) с очередью и абстракцией движка.
+TTSManager — потокобезопасная очередь TTS с фоновым воркером.
 
-Архитектура:
-  - BaseTTSEngine — абстрактный интерфейс для TTS-движка
-  - PyTTSx3Engine — текущий fallback (Windows SAPI5)
-  - TTSManager — потокобезопасная очередь с фоновым воркером
-
-Модуль экспортирует те же функции, что и раньше:
-  speak(), is_speaking(), get_last_tts_finish_time()
-плюс новые:
-  enqueue(), start(), stop(), wait_until_done()
-
-stt.py продолжает вызывать tts.is_speaking() и
-tts.get_last_tts_finish_time() без изменений.
+Также содержит FallbackEngine — обёртка, которая при ошибке
+основного движка автоматически переключается на fallback.
 """
 
 import logging
 import re
 import threading
 import time
-from abc import ABC, abstractmethod
 from queue import Queue, Empty, Full
 from typing import Optional
 
 import config
+from tts.base import BaseTTSEngine
 
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Markdown cleanup (перенесено из старого tts.py, используется движками)
+# Markdown cleanup (используется движками и speak())
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _clean_for_speech(text: str) -> str:
@@ -64,78 +54,63 @@ def _clean_for_speech(text: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Абстракция TTS-движка
+# FallbackEngine — обёртка с автоматическим fallback
 # ─────────────────────────────────────────────────────────────────────────────
 
-class BaseTTSEngine(ABC):
-    """Абстрактный интерфейс TTS-движка.
+class FallbackEngine(BaseTTSEngine):
+    """Обёртка: при ошибке primary движка переключается на fallback.
 
-    Для добавления нового движка (Piper, GPT-SoVITS и т.д.)
-    достаточно реализовать этот интерфейс.
+    Fallback срабатывает при любой ошибке synthesize_and_play():
+    - отсутствие модели
+    - CUDA error
+    - synthesis error
+    - playback error
+    - и т.д.
     """
 
-    @abstractmethod
-    def synthesize_and_play(self, text: str) -> None:
-        """Синтезировать и воспроизвести текст. Блокирует до окончания."""
-
-    def shutdown(self) -> None:
-        """Освободить ресурсы движка (опционально)."""
-
-
-class PyTTSx3Engine(BaseTTSEngine):
-    """Fallback TTS-движок на базе pyttsx3 (Windows SAPI5).
-
-    ВАЖНО: pyttsx3 использует COM на Windows, поэтому движок
-    должен быть инициализирован и использоваться в одном потоке.
-    TTSManager гарантирует это — все вызовы идут из воркер-потока.
-    """
-
-    def __init__(self) -> None:
-        self._engine = None
-
-    def _ensure_engine(self) -> None:
-        """Ленивая инициализация в воркер-потоке."""
-        if self._engine is not None:
-            return
-
-        import pyttsx3  # type: ignore[import-untyped]
-
-        self._engine = pyttsx3.init()
-        self._engine.setProperty("rate", config.TTS_RATE)
-
-        # Попробовать найти русский голос
-        voices = self._engine.getProperty("voices")
-        for voice in voices:
-            name_lower = voice.name.lower()
-            if "russian" in name_lower or "ru" in name_lower or "irina" in name_lower:
-                self._engine.setProperty("voice", voice.id)
-                logger.info("TTS голос: %s", voice.name)
-                break
-        else:
-            if voices:
-                logger.warning(
-                    "Русский голос не найден, используется: %s. "
-                    "Установи русский голос Windows для лучшего качества.",
-                    voices[0].name,
-                )
-
-        logger.info("TTS (pyttsx3) инициализирован, скорость: %d", config.TTS_RATE)
+    def __init__(self, primary: BaseTTSEngine, fallback: BaseTTSEngine) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._primary_failed_permanently: bool = False
 
     def synthesize_and_play(self, text: str) -> None:
-        """Синтез и воспроизведение через pyttsx3."""
-        self._ensure_engine()
-        assert self._engine is not None
-        self._engine.say(text)
-        self._engine.runAndWait()
-
-    def shutdown(self) -> None:
-        """Остановить pyttsx3 движок."""
-        if self._engine is not None:
+        """Попробовать primary, при ошибке — fallback."""
+        if not self._primary_failed_permanently:
             try:
-                self._engine.stop()
-            except Exception:
-                pass
-            self._engine = None
+                self._primary.synthesize_and_play(text)
+                return
+            except Exception as exc:
+                logger.error("[TTS] XTTS failed: %s", exc)
+                logger.info("[TTS] fallback -> pyttsx3")
+                # Если ошибка инициализации — помечаем как permanent
+                err_msg = str(exc)
+                if any(kw in err_msg for kw in (
+                    "не установлен", "not found", "невалиден",
+                    "Ошибка загрузки", "ImportError",
+                )):
+                    self._primary_failed_permanently = True
+                    logger.warning(
+                        "[TTS] Primary engine отключён навсегда: %s", exc
+                    )
+
+        # Fallback
+        try:
+            self._fallback.synthesize_and_play(text)
+        except Exception as fallback_exc:
+            logger.error(
+                "[TTS] Fallback тоже упал: %s", fallback_exc
+            )
+
+    def shutdown(self) -> None:
+        """Остановить оба движка."""
+        try:
+            self._primary.shutdown()
+        except Exception:
+            pass
+        try:
+            self._fallback.shutdown()
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,7 +131,7 @@ class TTSManager:
     """
 
     def __init__(self, engine: BaseTTSEngine | None = None) -> None:
-        self._engine: BaseTTSEngine = engine or PyTTSx3Engine()
+        self._engine: BaseTTSEngine = engine or _create_default_engine()
         self._queue: Queue[str | None] = Queue(maxsize=config.TTS_QUEUE_MAX_SIZE)
         self._worker: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -273,9 +248,11 @@ class TTSManager:
                 self._is_speaking = True
 
             try:
+                request_start = time.perf_counter()
                 logger.info("[TTS] speaking: '%s'", text[:80])
                 self._engine.synthesize_and_play(text)
-                logger.info("[TTS] finished: '%s'", text[:80])
+                total_time = time.perf_counter() - request_start
+                logger.info("[TTS] finished: '%s' (%.3fs)", text[:80], total_time)
             except Exception as exc:
                 logger.error("[TTS] Ошибка синтеза: %s", exc)
                 print(f"[TTS ошибка: {exc}]")
@@ -289,59 +266,34 @@ class TTSManager:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Модульный API (обратная совместимость с stt.py и main.py)
+# Фабрика движков
 # ─────────────────────────────────────────────────────────────────────────────
 
-_manager: TTSManager | None = None
+def _create_default_engine() -> BaseTTSEngine:
+    """Создать движок на основе config.TTS_ENGINE.
 
+    Если выбран XTTS — оборачиваем в FallbackEngine с pyttsx3 fallback.
+    Если XTTS недоступен при создании — сразу fallback.
+    """
+    from tts.pyttsx3_engine import PyTTSx3Engine
 
-def _get_manager() -> TTSManager:
-    """Получить или создать глобальный TTSManager."""
-    global _manager
-    if _manager is None:
-        _manager = TTSManager()
-    return _manager
+    engine_name = getattr(config, "TTS_ENGINE", "pyttsx3")
 
+    if engine_name == "pyttsx3":
+        logger.info("[TTS] backend=pyttsx3")
+        return PyTTSx3Engine()
 
-def start() -> None:
-    """Запустить фоновый TTS-воркер."""
-    _get_manager().start()
+    if engine_name == "xtts":
+        try:
+            from tts.xtts_engine import XTTSEngine
+            primary = XTTSEngine()
+            fallback = PyTTSx3Engine()
+            logger.info("[TTS] backend=xtts (с fallback на pyttsx3)")
+            return FallbackEngine(primary, fallback)
+        except Exception as exc:
+            logger.error("[TTS] Не удалось создать XTTS движок: %s", exc)
+            logger.info("[TTS] fallback -> pyttsx3")
+            return PyTTSx3Engine()
 
-
-def stop() -> None:
-    """Остановить TTS-воркер."""
-    if _manager is not None:
-        _manager.stop()
-
-
-def enqueue(text: str) -> None:
-    """Добавить предложение в очередь TTS."""
-    _get_manager().enqueue(text)
-
-
-def speak(text: str) -> None:
-    """Озвучить текст через TTS (совместимость: очередь + ожидание)."""
-    _get_manager().speak(text)
-
-
-def is_speaking() -> bool:
-    """Проверить, воспроизводит ли TTS текст в данный момент."""
-    mgr = _manager
-    if mgr is None:
-        return False
-    return mgr.is_speaking()
-
-
-def get_last_tts_finish_time() -> float:
-    """Получить unix timestamp окончания последнего TTS-воспроизведения."""
-    mgr = _manager
-    if mgr is None:
-        return 0.0
-    return mgr.get_last_tts_finish_time()
-
-
-def wait_until_done() -> None:
-    """Дождаться завершения всех предложений в очереди."""
-    mgr = _manager
-    if mgr is not None:
-        mgr.wait_until_done()
+    logger.warning("[TTS] Неизвестный движок '%s', используется pyttsx3", engine_name)
+    return PyTTSx3Engine()

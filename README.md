@@ -18,7 +18,46 @@
 
 3. **Офлайн STT / TTS Пайплайн**
    - **STT**: `faster-whisper` (модель `small`, ускорение на NVIDIA GPU через CUDA) + VAD (детекция тишины по амплитуде через `sounddevice`).
-   - **TTS**: `pyttsx3` (офлайн синтез речи для Windows).
+   - **TTS**: Локальный Neural TTS backend на базе **Coqui XTTS-v2** с **zero-shot voice cloning** по короткому образцу речи + автоматический fallback на `pyttsx3` (Windows SAPI5).
+
+---
+
+## 🎙️ Voice / TTS (Клонирование голоса)
+
+Агата поддерживает **zero-shot voice cloning** через модель Coqui XTTS-v2.
+
+### 1. Установка зависимостей
+```bash
+pip install coqui-tts soundfile
+```
+
+### 2. Размещение reference audio
+Поместите файл с образцом голоса (WAV, 6–15 секунд чистой речи) в папку `voices/`:
+```text
+voices/agata_reference.wav
+```
+*Инструкцию и рекомендации по подготовке аудио см. в `voices/README.md`.*
+
+### 3. Конфигурация (`config.py`)
+```python
+TTS_ENGINE = "xtts"             # "xtts" (основной) или "pyttsx3" (fallback)
+TTS_DEVICE = "auto"             # "auto", "cuda" или "cpu"
+TTS_LANGUAGE = "ru"             # Язык синтеза
+TTS_VOICE_PATH = "voices/agata_reference.wav"
+```
+
+### 4. Выбор CUDA/CPU и Fallback
+- При наличии GPU (NVIDIA RTX) модель использует **CUDA** в режиме `float16`.
+- Если GPU недоступен или reference audio не найден / повреждён, система **автоматически переключается на pyttsx3** без остановки работы Агаты.
+
+### 5. Диагностика
+Для проверки готовности TTS подсистемы выполните:
+```bash
+python scripts/tts_diagnostics.py
+```
+
+### 6. Безопасность
+> **Важно**: Функция клонирования голоса должна использоваться только с согласия и разрешения владельца/носителя голоса.
 
 ---
 

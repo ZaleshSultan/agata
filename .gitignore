@@ -13,9 +13,12 @@ data/working_memory.md
 models/*.onnx
 models/*.onnx.json
 
-# Временные аудиофайлы
+# Временные аудиофайлы и reference voice
 *.wav
 temp_output.wav
+voices/*.wav
+!voices/README.md
+tts_output/
 
 # IDE
 .vscode/

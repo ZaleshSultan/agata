@@ -187,6 +187,19 @@ class TTSManager:
         self.enqueue(clean_text)
         self.wait_until_done()
 
+    def speak_confirmation(self, text: str) -> None:
+        """Воспроизвести короткую фразу подтверждения с высоким приоритетом и минимальной задержкой."""
+        if not config.TTS_ENABLED:
+            return
+        if not text or not text.strip():
+            return
+        clean_text = _clean_for_speech(text)
+        if not clean_text:
+            return
+
+        logger.info("[TTS CONFIRM] Fast confirmation speech: '%s'", clean_text)
+        self.speak(clean_text)
+
     def is_speaking(self) -> bool:
         """Проверить, воспроизводит ли TTS текст в данный момент."""
         with self._lock:

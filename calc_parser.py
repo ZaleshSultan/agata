@@ -222,6 +222,20 @@ def replace_words_with_numbers(text: str) -> str:
     return " ".join(output_tokens)
 
 
+_ORDINAL_EXPONENTS: dict[str, int] = {
+    "первой": 1, "первую": 1, "первая": 1,
+    "второй": 2, "вторую": 2, "вторая": 2,
+    "третьей": 3, "третью": 3, "третья": 3,
+    "четвертой": 4, "четвёртой": 4, "четвертую": 4, "четвёртую": 4, "четвертая": 4, "четвёртая": 4,
+    "пятой": 5, "пятую": 5, "пятая": 5,
+    "шестой": 6, "шестую": 6, "шестая": 6,
+    "седьмой": 7, "седьмую": 7, "седьмая": 7,
+    "восьмой": 8, "восьмую": 8, "восьмая": 8,
+    "девятой": 9, "девятую": 9, "девятая": 9,
+    "десятой": 10, "десятую": 10, "десятая": 10,
+}
+
+
 def parse_natural_math_to_expression(text: str) -> str | None:
     """
     Convert a natural language Russian math phrase into an executable mathematical expression.
@@ -229,6 +243,9 @@ def parse_natural_math_to_expression(text: str) -> str | None:
     Examples:
         "двенадцать плюс семнадцать" -> "12 + 17"
         "двадцать пять умножить на восемь" -> "25 * 8"
+        "25 плюс 17 умножить на 2" -> "25 + 17 * 2"
+        "пять в четвертой степени" -> "5 ** 4"
+        "5 в четвёртой" -> "5 ** 4"
         "сто двадцать разделить на четыре" -> "120 / 4"
         "двадцать пять минус семь" -> "25 - 7"
         "три в квадрате" -> "3 ** 2"
@@ -241,7 +258,11 @@ def parse_natural_math_to_expression(text: str) -> str | None:
     if not text or not text.strip():
         return None
 
-    cleaned = text.strip().lower().rstrip("?").strip()
+    # Apply math-specific domain corrections first (e.g. "тус" -> "плюс", "умножит" -> "умножь", "5 с четвертой степени")
+    from stt_corrections import correct_math_text
+    corrected_input = correct_math_text(text)
+
+    cleaned = corrected_input.strip().lower().rstrip("?").strip()
 
     # Remove assistant address and command prefixes
     cleaned = re.sub(r"^\s*агата\s*[,!]?\s*", "", cleaned, flags=re.IGNORECASE)
@@ -267,9 +288,16 @@ def parse_natural_math_to_expression(text: str) -> str | None:
     # "X в кубе" -> "X ** 3"
     text_with_digits = re.sub(r"([0-9.]+)\s+в\s+кубе", r"\1 ** 3", text_with_digits)
 
-    # "X в степени Y" / "X в Y степень" -> "X ** Y"
+    # Ordinal powers: "X в четвёртой степени", "X в четвертой", "X в пятой", etc.
+    for ord_word, pwr in _ORDINAL_EXPONENTS.items():
+        # "X в {ord_word} степени" / "X в {ord_word}"
+        pattern_with_deg = re.compile(rf"([0-9.]+)\s+в\s+{ord_word}(?:\s+степен[ьи])?", re.IGNORECASE)
+        text_with_digits = pattern_with_deg.sub(rf"\1 ** {pwr}", text_with_digits)
+
+    # "X в степени Y" / "X в Y степень" / "X в Y степени" -> "X ** Y"
     text_with_digits = re.sub(r"([0-9.]+)\s+в\s+степени\s+([0-9.]+)", r"\1 ** \2", text_with_digits)
     text_with_digits = re.sub(r"([0-9.]+)\s+в\s+([0-9.]+)\s+степен[ьи]", r"\1 ** \2", text_with_digits)
+    text_with_digits = re.sub(r"([0-9.]+)\s+в\s+([0-9.]+)\s+степень", r"\1 ** \2", text_with_digits)
 
     # "X процент(ов) от Y" -> "Y * (X / 100)"
     pct_match = re.search(r"([0-9.]+)\s*%\s+от\s+([0-9.]+)|([0-9.]+)\s+процент(?:а|ов)?\s+от\s+([0-9.]+)", text_with_digits)

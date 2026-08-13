@@ -34,6 +34,16 @@ class TestConfirmation(unittest.TestCase):
         self.assertEqual(parse_confirmation("нет не надо"), ConfirmationResult.FALSE)
         self.assertEqual(parse_confirmation("лучше не надо"), ConfirmationResult.FALSE)
 
+    def test_stt_acoustic_recovery(self) -> None:
+        # Acoustic variations and phonetic errors from Whisper
+        self.assertEqual(parse_confirmation("отверждаю"), ConfirmationResult.TRUE)
+        self.assertEqual(parse_confirmation("подверждаю"), ConfirmationResult.TRUE)
+        self.assertEqual(parse_confirmation("конешно"), ConfirmationResult.TRUE)
+        self.assertEqual(parse_confirmation("валяи"), ConfirmationResult.TRUE)
+        self.assertEqual(parse_confirmation("агата да"), ConfirmationResult.TRUE)
+        self.assertEqual(parse_confirmation("агата нет"), ConfirmationResult.FALSE)
+        self.assertEqual(parse_confirmation("отменит"), ConfirmationResult.FALSE)
+
     def test_unknown_phrases(self) -> None:
         unknowns = [
             "что такое квантовая механика",

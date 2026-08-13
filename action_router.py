@@ -123,7 +123,8 @@ def _clean_command_for_routing(text: str) -> str:
     """Нормализация текста команды для детерминированного роутинга."""
     if not text:
         return ""
-    cleaned = text.strip()
+    from stt_corrections import correct_command_text
+    cleaned = correct_command_text(text.strip())
     # Удаление обращения "Агата" в начале
     cleaned = re.sub(r"^\s*агата\s*[,!]?\s*", "", cleaned, flags=re.IGNORECASE)
     # Нормализация пунктуации после глаголов действия ("открой, VS Code" -> "открой VS Code")

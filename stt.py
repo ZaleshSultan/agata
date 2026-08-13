@@ -90,12 +90,12 @@ def _get_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _record_audio() -> np.ndarray:
+def _record_audio(is_confirmation: bool = False) -> np.ndarray:
     """
     Записать речь с микрофона до обнаружения тишины.
 
     Используется energy-based VAD по RMS с многоуровневой защитой:
-    - Ожидание завершения TTS + кулдаун;
+    - Ожидание завершения TTS + адаптивный кулдаун;
     - Требование минимальной длительности звучащих кадров;
     - Сбор подробных метрик аудио для логов.
     """
@@ -103,19 +103,30 @@ def _record_audio() -> np.ndarray:
     if tts.is_speaking():
         logger.info("[STT] TTS воспроизводится — ожидаю завершения...")
         while tts.is_speaking():
-            time.sleep(0.05)
+            time.sleep(0.02 if is_confirmation else 0.05)
 
     time_since_tts = time.time() - tts.get_last_tts_finish_time()
-    if time_since_tts < config.TTS_COOLDOWN_SECONDS:
-        cooldown_wait = config.TTS_COOLDOWN_SECONDS - time_since_tts
-        logger.info("[STT] Ожидание кулдауна после TTS (%.2fс)...", cooldown_wait)
-        time.sleep(cooldown_wait)
+    required_cooldown = (
+        getattr(config, "CONFIRM_COOLDOWN_MIN", 0.10)
+        if is_confirmation
+        else config.TTS_COOLDOWN_SECONDS
+    )
+    if time_since_tts < required_cooldown:
+        cooldown_wait = max(0.0, required_cooldown - time_since_tts)
+        if cooldown_wait > 0.02:
+            logger.info("[STT] Ожидание кулдауна после TTS (%.2fс, is_confirm=%s)...", cooldown_wait, is_confirmation)
+            time.sleep(cooldown_wait)
 
     sample_rate: int = config.SAMPLE_RATE
     block_duration: float = 0.05
     block_size: int = int(sample_rate * block_duration)
 
-    silence_blocks: int = max(1, int(config.SILENCE_DURATION / block_duration))
+    silence_dur = (
+        max(0.35, config.SILENCE_DURATION * 0.6)
+        if is_confirmation
+        else config.SILENCE_DURATION
+    )
+    silence_blocks: int = max(1, int(silence_dur / block_duration))
     max_blocks: int = max(1, int(config.MAX_RECORD_SECONDS / block_duration))
     pre_roll_blocks: int = max(1, int(config.PRE_ROLL_SECONDS / block_duration))
     min_speech_blocks: int = max(1, int(config.MIN_SPEECH_SECONDS / block_duration))
@@ -129,7 +140,7 @@ def _record_audio() -> np.ndarray:
     voiced_blocks = 0
     max_rms = 0.0
 
-    logger.info("[STT] recording started... (говорите)")
+    logger.info("[STT] recording started... (is_confirm=%s)", is_confirmation)
 
     def callback(indata: np.ndarray, frame_count: int, time_info, status) -> None:
         nonlocal has_speech, speech_blocks, silent_count, voiced_blocks, max_rms
@@ -184,14 +195,20 @@ def _record_audio() -> np.ndarray:
     voiced_duration = voiced_blocks * block_duration
 
     logger.info(
-        "[STT] recording=%.2fs voiced=%.2fs max_rms=%.5f speech_detected=%s",
+        "[STT] recording=%.2fs voiced=%.2fs max_rms=%.5f speech_detected=%s is_confirm=%s",
         total_duration,
         voiced_duration,
         max_rms,
         has_speech,
+        is_confirmation,
     )
 
-    if not has_speech or voiced_duration < config.MIN_VOICED_AUDIO_SECONDS:
+    min_voiced = (
+        config.MIN_VOICED_AUDIO_SECONDS * 0.6
+        if is_confirmation
+        else config.MIN_VOICED_AUDIO_SECONDS
+    )
+    if not has_speech or voiced_duration < min_voiced:
         logger.info("[STT] rejected: no_speech")
         return np.array([], dtype=np.float32)
 
@@ -255,10 +272,10 @@ def record_and_transcribe(is_confirmation: bool = False) -> str:
     Returns:
         Распознанный текст или пустую строку.
     """
-    audio = _record_audio()
+    audio = _record_audio(is_confirmation=is_confirmation)
 
     # Слишком короткая запись (для confirmation допускаем более короткие клипы)
-    min_audio_len = config.SAMPLE_RATE * (0.15 if is_confirmation else 0.25)
+    min_audio_len = config.SAMPLE_RATE * (0.12 if is_confirmation else 0.25)
     if len(audio) < min_audio_len:
         logger.info("[STT] Слишком короткая запись — пропускаю")
         return ""
@@ -293,14 +310,17 @@ def record_and_transcribe(is_confirmation: bool = False) -> str:
             return ""
 
         # ─────────────────────────────────────────────
-        # Нормализация: raw STT → canonical text
+        # Нормализация: raw STT → canonical text → domain corrections
         # ─────────────────────────────────────────────
+        from stt_corrections import correct_command_text
         normalized = normalize_stt(raw_text)
-        if normalized != raw_text:
-            logger.info("[STT] raw: '%s' -> normalized: '%s'", raw_text, normalized)
+        corrected = correct_command_text(normalized)
+
+        if corrected != raw_text:
+            logger.info("[STT] raw: '%s' -> norm: '%s' -> corrected: '%s'", raw_text, normalized, corrected)
         else:
             logger.info("[STT] recognized: '%s'", raw_text)
-        return normalized
+        return corrected
 
     except Exception as exc:
         logger.error("[STT] Ошибка STT: %s", exc)
@@ -326,13 +346,14 @@ def transcribe_file(path: str, is_confirmation: bool = False) -> str:
     transcribe_start = time.perf_counter()
 
     prompt = "Да, нет, отмена, подтверждаю." if is_confirmation else (
-        "Агата, открой хром, закрой хром, открой ютуб, "
-        "напомни мне, сколько времени, посчитай."
+        "Агата, открой Chrome, закрой Chrome, открой YouTube, "
+        "напомни мне, сколько времени, посчитай, двадцать плюс тридцать."
     )
+    stt_lang = getattr(config, "STT_LANGUAGE", "ru")
 
     segments_gen, info = model.transcribe(
         path,
-        language="ru",
+        language=stt_lang,
         beam_size=5,
         temperature=0.0,
         initial_prompt=prompt,
@@ -349,6 +370,8 @@ def transcribe_file(path: str, is_confirmation: bool = False) -> str:
 
     segment_list = list(segments_gen)
     transcribe_elapsed = time.perf_counter() - transcribe_start
+    audio_duration = getattr(info, "duration", 0.0) or (transcribe_elapsed if transcribe_elapsed > 0 else 1.0)
+    rtf = transcribe_elapsed / audio_duration if audio_duration > 0 else 0.0
 
     if not segment_list:
         logger.info("[STT] rejected: empty_whisper (%.3fs)", transcribe_elapsed)
@@ -366,11 +389,16 @@ def transcribe_file(path: str, is_confirmation: bool = False) -> str:
     max_compression = max(s.compression_ratio for s in segment_list)
 
     logger.info(
-        "[STT DIAG] text=\"%s\" device=%s compute=%s duration=%.3fs no_speech_prob=%.2f avg_logprob=%.2f compression=%.2f is_confirm=%s",
-        raw_text,
+        "[STT DIAG] model=%s device=%s compute=%s audio_duration=%.3fs inference_time=%.3fs real_time_factor=%.2f language=%s text=\"%s\" initial_prompt=\"%s\" beam_size=5 temperature=0.0 vad=True no_speech_prob=%.2f avg_logprob=%.2f compression=%.2f is_confirm=%s",
+        getattr(config, "WHISPER_MODEL_SIZE", "large-v3-turbo"),
         _model_device,
         _model_compute,
+        audio_duration,
         transcribe_elapsed,
+        rtf,
+        stt_lang,
+        raw_text,
+        prompt[:30],
         avg_no_speech,
         avg_logprob,
         max_compression,

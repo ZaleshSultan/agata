@@ -57,9 +57,15 @@ ENABLE_ADAPTIVE_THINKING: bool = True
 ENABLE_THINKING: bool = False
 
 # ── STT (faster-whisper) ───────────────────────────────────────────────────
-WHISPER_MODEL_SIZE: str = "medium"
+WHISPER_MODEL_SIZE: str = "large-v3-turbo"
 WHISPER_DEVICE: str = "auto"                    # "auto" | "cuda" | "cpu" (автоопределение через runtime_capabilities)
 WHISPER_COMPUTE_TYPE: str = "auto"              # "auto" | "float16" | "int8_float16" | "int8"
+STT_LANGUAGE: str = "ru"                        # Основной язык для STT (Whisper)
+
+# ── Confirmation UX & Timings ──────────────────────────────────────────────
+CONFIRM_ARM_DELAY: float = 0.20                 # Задержка включения микрофона после начала воспроизведения (сек)
+CONFIRM_COOLDOWN_MIN: float = 0.10              # Минимальный кулдаун после TTS перед записью подтверждения (сек)
+CONFIRM_COOLDOWN_MAX: float = 0.40              # Максимальный кулдаун для confirmation (сек)
 
 # ── TTS ────────────────────────────────────────────────────────────────────
 TTS_RATE: int = 175                             # Скорость речи pyttsx3 (слов/мин)
@@ -73,6 +79,7 @@ TTS_LANGUAGE: str = "ru"                        # Язык синтеза для
 TTS_VOICE_PATH: str = str(BASE_DIR / "voices" / "agata_reference.wav")  # Reference voice для клонирования
 TTS_XTTS_MODEL: str = "tts_models/multilingual/multi-dataset/xtts_v2"   # Модель XTTS
 TTS_FALLBACK_ENGINE: str = "pyttsx3"            # Fallback движок при ошибке primary
+TTS_PHRASE_CACHE_ENABLED: bool = True           # RAM-кэширование повторяющихся коротких фраз (confirmation)
 VOICE_CONFIRMATION: bool = True                  # Голосовое подтверждение действий (True = да/нет голосом, False = y/n в консоли)
 FUZZY_MATCH_THRESHOLD: float = 0.75             # Порог нечёткого сопоставления команд
 

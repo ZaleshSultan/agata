@@ -102,40 +102,31 @@ class Agent:
     _CONFIRM_NO = {"нет", "отмена", "не надо", "отменяй", "стоп", "отмени",
                    "no", "не нужно", "нельзя", "не стоит", "отказ"}
 
-    # Человекочитаемые описания действий для голосового вопроса
-    _TOOL_VOICE_LABELS: dict[str, str] = {
-        "close_app": "Закрыть {app_name}?",
-        "close_target": "Закрыть {target}?",
-        "open_app": "Открыть {app_name}?",
-        "open_browser": "Открыть {url}?",
-        "copy_project_snapshot": "Скопировать проект на флешку?",
-        "create_reminder": "Создать напоминание?",
+    # Человекочитаемые короткие описания действий для голосового подтверждения
+    _TOOL_VOICE_SHORT_PHRASES: dict[str, str] = {
+        "close_app": "Закрыть?",
+        "close_target": "Закрыть?",
+        "open_app": "Открыть?",
+        "open_browser": "Открыть?",
+        "copy_project_snapshot": "Скопировать?",
+        "create_reminder": "Создать?",
+        "delete": "Удалить?",
+        "delete_file": "Удалить?",
+        "remove": "Удалить?",
     }
 
     def _build_voice_question(self, tool_name: str, arguments: dict) -> str:
-        """Сформировать голосовой вопрос для подтверждения."""
-        template = self._TOOL_VOICE_LABELS.get(tool_name)
-        if template:
-            try:
-                question = template.format(**arguments)
-            except KeyError:
-                question = f"Выполнить {tool_name}?"
-        else:
-            question = f"Выполнить {tool_name}?"
-        return question + " Скажите да или нет."
+        """Сформировать короткий голосовой вопрос для подтверждения."""
+        if tool_name in self._TOOL_VOICE_SHORT_PHRASES:
+            return self._TOOL_VOICE_SHORT_PHRASES[tool_name]
+        if any(w in tool_name for w in ("delete", "remove", "kill", "drop")):
+            return "Удалить?"
+        if any(w in tool_name for w in ("close", "stop", "terminate")):
+            return "Закрыть?"
+        return "Выполнить?"
 
     def _ask_confirmation(self, tool_name: str, arguments: dict) -> bool:
-        """Запросить подтверждение действия — голосом или с клавиатуры.
-
-        При VOICE_CONFIRMATION=True:
-          1. TTS озвучивает вопрос.
-          2. STT записывает ответ с микрофона.
-          3. Ответ матчится по паттернам да/нет.
-          4. Если STT не распознал — fallback на input().
-
-        При VOICE_CONFIRMATION=False:
-          Как раньше — текстовый input("y/n").
-        """
+        """Запросить подтверждение действия — голосом или с клавиатуры."""
         args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
         print(f"\n⚠️  {config.ASSISTANT_NAME} хочет выполнить: {tool_name}")
         print(f"   Аргументы: {args_str}")
@@ -146,42 +137,67 @@ class Agent:
         return self._ask_confirmation_keyboard()
 
     def _ask_confirmation_voice(self, tool_name: str, arguments: dict) -> bool:
-        """Голосовое подтверждение: TTS вопрос → STT ответ (is_confirmation=True) → быстрый парсер."""
+        """Быстрое голосовое подтверждение: короткий TTS вопрос -> STT ответ -> парсер."""
         import stt
         import tts as tts_module
 
+        t_received = perf_counter()
         question = self._build_voice_question(tool_name, arguments)
         logger.info("[CONFIRM] Voice question: '%s'", question)
 
-        # Озвучиваем вопрос (синхронно — speak() блокирует до конца воспроизведения)
-        tts_module.speak(question)
+        t_tts_enqueued = perf_counter()
+        # Воспроизводим короткую фразу (использует RAM-кэш если фраза статична)
+        tts_module.speak_confirmation(question)
+        t_tts_done = perf_counter()
 
-        # Записываем ответ с микрофона с облегчёнными фильтрами для коротких слов
+        # Микрофон активируется сразу с минимальным адаптивным кулдауном
         logger.info("[CONFIRM] Listening for voice answer (confirmation mode)...")
-        print("   🎤 Слушаю ваш ответ...")
+        print(f"   🎤 {question} (Слушаю ответ...)")
+        t_stt_start = perf_counter()
         spoken_text = stt.record_and_transcribe(is_confirmation=True)
+        t_stt_done = perf_counter()
 
         if not spoken_text:
             logger.info("[CONFIRM] STT returned empty — fallback to keyboard")
             print("   (Не удалось распознать речь — введите ответ вручную)")
+            self._log_confirm_perf(t_received, t_tts_enqueued, t_tts_done, t_stt_start, t_stt_done, "EMPTY_FALLBACK")
             return self._ask_confirmation_keyboard()
 
         logger.info("[CONFIRM] Voice answer: '%s'", spoken_text)
-        result = parse_confirmation(spoken_text)
+        is_destructive = any(w in tool_name for w in ("delete", "remove", "kill", "drop", "format"))
+        result = parse_confirmation(spoken_text, strict=is_destructive)
 
         if result == ConfirmationResult.TRUE:
             logger.info("[CONFIRM] Accepted (TRUE) for '%s'", spoken_text)
             print(f"   ✔ Подтверждено голосом: \"{spoken_text}\"")
+            self._log_confirm_perf(t_received, t_tts_enqueued, t_tts_done, t_stt_start, t_stt_done, "TRUE")
             return True
         elif result == ConfirmationResult.FALSE:
             logger.info("[CONFIRM] Rejected (FALSE) for '%s'", spoken_text)
             print(f"   ✖ Отменено голосом: \"{spoken_text}\"")
+            self._log_confirm_perf(t_received, t_tts_enqueued, t_tts_done, t_stt_start, t_stt_done, "FALSE")
             return False
 
         # Не распознали как да/нет — fallback на клавиатуру
         logger.info("[CONFIRM] Unrecognized confirmation '%s' (UNKNOWN) — fallback to keyboard", spoken_text)
         print(f"   (Не поняла ответ: \"{spoken_text}\" — введите вручную)")
+        self._log_confirm_perf(t_received, t_tts_enqueued, t_tts_done, t_stt_start, t_stt_done, "UNKNOWN_FALLBACK")
         return self._ask_confirmation_keyboard()
+
+    @staticmethod
+    def _log_confirm_perf(t_recv: float, t_tts_enq: float, t_tts_fin: float, t_stt_st: float, t_stt_fn: float, decision: str) -> None:
+        """Подробный тайминг пайплайна подтверждения."""
+        total = perf_counter() - t_recv
+        tts_dur = t_tts_fin - t_tts_enq
+        stt_dur = t_stt_fn - t_stt_st
+        logger.info(
+            "[CONFIRM PERF] tts_duration=%.3fs mic_wait=%.3fs stt_duration=%.3fs decision=%s total=%.3fs",
+            tts_dur,
+            t_stt_st - t_tts_fin,
+            stt_dur,
+            decision,
+            total,
+        )
 
     @staticmethod
     def _ask_confirmation_keyboard() -> bool:

@@ -32,6 +32,7 @@ __all__ = [
     "stop",
     "enqueue",
     "speak",
+    "speak_confirmation",
     "is_speaking",
     "get_last_tts_finish_time",
     "wait_until_done",
@@ -71,6 +72,11 @@ def enqueue(text: str) -> None:
 def speak(text: str) -> None:
     """Озвучить текст через TTS (совместимость: очередь + ожидание)."""
     _get_manager().speak(text)
+
+
+def speak_confirmation(text: str) -> None:
+    """Воспроизвести короткую фразу подтверждения с высоким приоритетом."""
+    _get_manager().speak_confirmation(text)
 
 
 def is_speaking() -> bool:

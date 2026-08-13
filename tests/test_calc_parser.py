@@ -42,6 +42,13 @@ class TestCalcParser(unittest.TestCase):
         self.assertEqual(parse_natural_math_to_expression("три в квадрате"), "3 ** 2")
         self.assertEqual(parse_natural_math_to_expression("два в кубе"), "2 ** 3")
         self.assertEqual(parse_natural_math_to_expression("пять в степени три"), "5 ** 3")
+        self.assertEqual(parse_natural_math_to_expression("пять в четвёртой степени"), "5 ** 4")
+        self.assertEqual(parse_natural_math_to_expression("5 в четвертой"), "5 ** 4")
+        self.assertEqual(parse_natural_math_to_expression("5 с четвертой степени"), "5 ** 4")
+
+        # Multi-operation and phonetic error corrections
+        self.assertEqual(parse_natural_math_to_expression("25 плюс 17 умножить на 2"), "25 + 17 * 2")
+        self.assertEqual(parse_natural_math_to_expression("25 тус 17 умножит на 2"), "25 + 17 * 2")
 
         # Roots
         self.assertEqual(parse_natural_math_to_expression("корень из девяти"), "sqrt(9)")

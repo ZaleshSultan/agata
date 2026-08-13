@@ -23,13 +23,13 @@ _CONFIRM_TRUE_EXACT = frozenset({
     "да", "ага", "угу", "конечно", "подтверждаю", "выполняй", "давай",
     "точно", "верно", "ок", "окей", "okay", "yes", "y", "д", "валяй",
     "согласен", "согласна", "делай", "разрешаю", "давай делай", "конечно давай",
-    "плюс",
+    "плюс", "подтвердить", "подтверди", "подтвердите",
 })
 
 _CONFIRM_FALSE_EXACT = frozenset({
     "нет", "не надо", "отмена", "отмени", "стоп", "не выполняй",
     "не нужно", "не стоит", "отказ", "no", "n", "н", "нельзя", "отменяй",
-    "не делай", "отбой", "хватит", "минус",
+    "не делай", "отбой", "хватит", "минус", "отменить", "отмените",
 })
 
 _CONFIRM_TRUE_PHRASES = (
@@ -43,12 +43,13 @@ _CONFIRM_FALSE_PHRASES = (
 )
 
 
-def parse_confirmation(user_text: str) -> ConfirmationResult:
+def parse_confirmation(user_text: str, strict: bool = False) -> ConfirmationResult:
     """
     Parse a user confirmation into TRUE, FALSE, or UNKNOWN.
 
     Args:
         user_text: Raw or normalized user input string.
+        strict: If True, uses stricter fuzzy thresholds (e.g. for destructive actions).
 
     Returns:
         ConfirmationResult: TRUE, FALSE, or UNKNOWN.
@@ -56,7 +57,11 @@ def parse_confirmation(user_text: str) -> ConfirmationResult:
     if not user_text or not user_text.strip():
         return ConfirmationResult.UNKNOWN
 
-    cleaned = " ".join(user_text.strip().casefold().split()).strip(" .,!?:;\"'")
+    # 0. Apply domain-aware STT acoustic corrections first
+    from stt_corrections import correct_confirmation_text
+    corrected = correct_confirmation_text(user_text)
+
+    cleaned = " ".join(corrected.strip().casefold().split()).strip(" .,!?:;\"'")
     if not cleaned:
         return ConfirmationResult.UNKNOWN
 
@@ -96,13 +101,15 @@ def parse_confirmation(user_text: str) -> ConfirmationResult:
     # 4. Fuzzy fallback on single-word or short utterances
     if len(words) <= 2:
         from fuzzy_resolver import fuzzy_resolve
+        threshold = 0.90 if strict else 0.82
+
         # Check against positive words
-        pos_match = fuzzy_resolve(cleaned, list(_CONFIRM_TRUE_EXACT), threshold=0.8)
+        pos_match = fuzzy_resolve(cleaned, list(_CONFIRM_TRUE_EXACT), threshold=threshold)
         if pos_match:
             logger.info("[CONFIRM] fuzzy match TRUE: '%s' -> '%s' (score=%.2f)", cleaned, pos_match.matched_candidate, pos_match.score)
             return ConfirmationResult.TRUE
 
-        neg_match = fuzzy_resolve(cleaned, list(_CONFIRM_FALSE_EXACT), threshold=0.8)
+        neg_match = fuzzy_resolve(cleaned, list(_CONFIRM_FALSE_EXACT), threshold=threshold)
         if neg_match:
             logger.info("[CONFIRM] fuzzy match FALSE: '%s' -> '%s' (score=%.2f)", cleaned, neg_match.matched_candidate, neg_match.score)
             return ConfirmationResult.FALSE

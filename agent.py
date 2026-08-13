@@ -93,10 +93,110 @@ class Agent:
             self._llm = LocalLLM()
         return self._llm
 
+    # ── Паттерны голосового подтверждения ────────────────────────────────
+    _CONFIRM_YES = {"да", "подтверждаю", "выполняй", "давай", "ок", "окей",
+                    "yes", "конечно", "ага", "угу", "точно", "валяй"}
+    _CONFIRM_NO = {"нет", "отмена", "не надо", "отменяй", "стоп", "отмени",
+                   "no", "не нужно", "нельзя", "не стоит", "отказ"}
+
+    # Человекочитаемые описания действий для голосового вопроса
+    _TOOL_VOICE_LABELS: dict[str, str] = {
+        "close_app": "Закрыть {app_name}?",
+        "close_target": "Закрыть {target}?",
+        "open_app": "Открыть {app_name}?",
+        "open_browser": "Открыть {url}?",
+        "copy_project_snapshot": "Скопировать проект на флешку?",
+        "create_reminder": "Создать напоминание?",
+    }
+
+    def _build_voice_question(self, tool_name: str, arguments: dict) -> str:
+        """Сформировать голосовой вопрос для подтверждения."""
+        template = self._TOOL_VOICE_LABELS.get(tool_name)
+        if template:
+            try:
+                question = template.format(**arguments)
+            except KeyError:
+                question = f"Выполнить {tool_name}?"
+        else:
+            question = f"Выполнить {tool_name}?"
+        return question + " Скажите да или нет."
+
     def _ask_confirmation(self, tool_name: str, arguments: dict) -> bool:
+        """Запросить подтверждение действия — голосом или с клавиатуры.
+
+        При VOICE_CONFIRMATION=True:
+          1. TTS озвучивает вопрос.
+          2. STT записывает ответ с микрофона.
+          3. Ответ матчится по паттернам да/нет.
+          4. Если STT не распознал — fallback на input().
+
+        При VOICE_CONFIRMATION=False:
+          Как раньше — текстовый input("y/n").
+        """
         args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
         print(f"\n⚠️  {config.ASSISTANT_NAME} хочет выполнить: {tool_name}")
         print(f"   Аргументы: {args_str}")
+
+        if config.VOICE_CONFIRMATION and config.TTS_ENABLED:
+            return self._ask_confirmation_voice(tool_name, arguments)
+
+        return self._ask_confirmation_keyboard()
+
+    def _ask_confirmation_voice(self, tool_name: str, arguments: dict) -> bool:
+        """Голосовое подтверждение: TTS вопрос → STT ответ → паттерн-матчинг."""
+        import stt
+        import tts as tts_module
+
+        question = self._build_voice_question(tool_name, arguments)
+        logger.info("[CONFIRM] Voice question: '%s'", question)
+
+        # Озвучиваем вопрос (синхронно — speak() блокирует до конца воспроизведения)
+        tts_module.speak(question)
+
+        # Записываем ответ с микрофона
+        logger.info("[CONFIRM] Listening for voice answer...")
+        print("   🎤 Слушаю ваш ответ...")
+        spoken_text = stt.record_and_transcribe()
+
+        if not spoken_text:
+            logger.info("[CONFIRM] STT returned empty — fallback to keyboard")
+            print("   (Не удалось распознать речь — введите ответ вручную)")
+            return self._ask_confirmation_keyboard()
+
+        spoken_lower = spoken_text.lower().strip().rstrip(".")
+        logger.info("[CONFIRM] Voice answer: '%s'", spoken_text)
+
+        # Точное совпадение со словарями
+        if spoken_lower in self._CONFIRM_YES:
+            logger.info("[CONFIRM] Accepted (exact match: '%s')", spoken_lower)
+            print(f"   ✔ Подтверждено голосом: \"{spoken_text}\"")
+            return True
+
+        if spoken_lower in self._CONFIRM_NO:
+            logger.info("[CONFIRM] Rejected (exact match: '%s')", spoken_lower)
+            print(f"   ✖ Отменено голосом: \"{spoken_text}\"")
+            return False
+
+        # Подстрочный поиск (на случай "ну да давай" или "нет не надо")
+        words = set(spoken_lower.split())
+        if words & self._CONFIRM_YES:
+            logger.info("[CONFIRM] Accepted (substring match in: '%s')", spoken_text)
+            print(f"   ✔ Подтверждено голосом: \"{spoken_text}\"")
+            return True
+
+        if words & self._CONFIRM_NO:
+            logger.info("[CONFIRM] Rejected (substring match in: '%s')", spoken_text)
+            print(f"   ✖ Отменено голосом: \"{spoken_text}\"")
+            return False
+
+        # Не распознали как да/нет — fallback на клавиатуру
+        logger.info("[CONFIRM] Unrecognized voice answer '%s' — fallback to keyboard", spoken_text)
+        print(f"   (Не поняла ответ: \"{spoken_text}\" — введите вручную)")
+        return self._ask_confirmation_keyboard()
+
+    @staticmethod
+    def _ask_confirmation_keyboard() -> bool:
+        """Клавиатурное подтверждение (fallback)."""
         try:
             answer = input("   Выполнить? [y/n]: ").strip().lower()
         except EOFError:

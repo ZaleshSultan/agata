@@ -57,11 +57,14 @@ ENABLE_ADAPTIVE_THINKING: bool = True
 ENABLE_THINKING: bool = False
 
 # ── STT (faster-whisper) ───────────────────────────────────────────────────
-# large-v3-turbo — оптимальный баланс качество/скорость для русского языка на RTX 4050.
-# Альтернативы: tiny / base / small / medium / large-v3 / large-v3-turbo
-WHISPER_MODEL_SIZE: str = "large-v3-turbo"
-WHISPER_DEVICE: str = "cuda"                    # "cuda" для RTX 4050, "cpu" как fallback
-WHISPER_COMPUTE_TYPE: str = "float16"           # float16 на GPU, int8 на CPU
+# ВАЖНО: CPU, не CUDA. 30B LLM почти полностью занимает 6GB VRAM RTX 4050 —
+# делить видеопамять с Whisper приводило к вытеснению/подкачке модели между
+# запросами (см. диагностику PERF-логов, gap между TTFT и done ~50s).
+# medium — разумный компромисс качество/скорость на CPU для русского.
+# Если после теста медленно — понижай до "small".
+WHISPER_MODEL_SIZE: str = "medium"
+WHISPER_DEVICE: str = "cpu"
+WHISPER_COMPUTE_TYPE: str = "int8"              # int8 — правильный выбор именно для CPU
 
 # ── TTS ────────────────────────────────────────────────────────────────────
 TTS_RATE: int = 175                             # Скорость речи pyttsx3 (слов/мин)
@@ -70,11 +73,12 @@ TTS_ENGINE: str = "xtts"                        # Движок TTS: "xtts" | "py
 TTS_ENABLED: bool = True                        # Мастер-переключатель TTS (False = только текст)
 TTS_MIN_SENTENCE_CHARS: int = 20                # Мин. символов для отправки предложения в TTS
 TTS_QUEUE_MAX_SIZE: int = 50                    # Макс. предложений в очереди TTS
-TTS_DEVICE: str = "auto"                        # "auto" | "cuda" | "cpu" — устройство для XTTS
+TTS_DEVICE: str = "cpu"                         # было "auto" (=cuda) — конфликтовало с LLM за VRAM
 TTS_LANGUAGE: str = "ru"                        # Язык синтеза для XTTS
 TTS_VOICE_PATH: str = str(BASE_DIR / "voices" / "agata_reference.wav")  # Reference voice для клонирования
 TTS_XTTS_MODEL: str = "tts_models/multilingual/multi-dataset/xtts_v2"   # Модель XTTS
 TTS_FALLBACK_ENGINE: str = "pyttsx3"            # Fallback движок при ошибке primary
+VOICE_CONFIRMATION: bool = True                  # Голосовое подтверждение действий (True = да/нет голосом, False = y/n в консоли)
 
 # ── Аудиозапись / STT VAD ──────────────────────────────────────────────────
 

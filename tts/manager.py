@@ -18,39 +18,11 @@ from tts.base import BaseTTSEngine
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Markdown cleanup (используется движками и speak())
-# ─────────────────────────────────────────────────────────────────────────────
+from tts_text_normalizer import normalize_text_for_tts
 
 def _clean_for_speech(text: str) -> str:
-    """Убрать markdown и элементы, неудобные для озвучивания."""
-    cleaned = text
-
-    # Кодовые блоки
-    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
-
-    # Inline code
-    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
-
-    # Bold / italic
-    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
-    cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
-    cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
-    cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
-
-    # Markdown links
-    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
-
-    # Заголовки
-    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
-
-    # Strikethrough
-    cleaned = re.sub(r"~~(.+?)~~", r"\1", cleaned)
-
-    # Убираем лишние пробелы
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    return cleaned
+    """Убрать markdown, формулы, LaTeX и элементы, неудобные для озвучивания."""
+    return normalize_text_for_tts(text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,19 +149,23 @@ class TTSManager:
         if not text or not text.strip():
             return
 
+        clean_text = _clean_for_speech(text)
+        if not clean_text:
+            return
+
         # Автозапуск при первом использовании
         if not self._started:
             self.start()
 
         try:
-            self._queue.put(text, timeout=5.0)
+            self._queue.put(clean_text, timeout=5.0)
             logger.info(
                 "[TTS QUEUE] enqueued (%d in queue): '%s'",
                 self._queue.qsize(),
-                text[:60],
+                clean_text[:60],
             )
         except Full:
-            logger.warning("[TTS QUEUE] Очередь переполнена, пропускаю: '%s'", text[:60])
+            logger.warning("[TTS QUEUE] Очередь переполнена, пропускаю: '%s'", clean_text[:60])
 
     def speak(self, text: str) -> None:
         """Совместимость: поставить текст в очередь и дождаться окончания.

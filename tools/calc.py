@@ -17,23 +17,25 @@ def calculate(expression: str) -> str:
     Вычислить математическое выражение.
 
     Args:
-        expression: Строка с математическим выражением, например "847 * 23".
+        expression: Строка с математическим выражением, например "847 * 23" или "двенадцать плюс семнадцать".
 
     Returns:
-        Результат вычисления в виде строки.
+        Результат вычисления в виде строки (краткий для речи).
     """
-    # Убираем лишние пробелы и возможные кавычки
+    from calc_parser import parse_natural_math_to_expression, safe_evaluate_math
+
     expr = expression.strip().strip("\"'")
-    try:
-        result = numexpr.evaluate(expr)
-        # numexpr возвращает numpy-массив, берём скалярное значение
-        value = result.item() if hasattr(result, "item") else result
-        logger.info("Вычислено: %s = %s", expr, value)
-        return str(value)
-    except Exception as exc:
-        error_msg = f"Ошибка вычисления '{expr}': {exc}"
-        logger.warning(error_msg)
-        return error_msg
+    # Check if expression is in words e.g. "двенадцать плюс семнадцать"
+    parsed = parse_natural_math_to_expression(expr)
+    target_expr = parsed if parsed else expr
+
+    success, value, answer = safe_evaluate_math(target_expr)
+    if success:
+        logger.info("[CALC] Evaluated: '%s' -> '%s' (value=%s, answer='%s')", expression, target_expr, value, answer)
+        return answer
+    else:
+        logger.warning("[CALC] Evaluation failed for '%s': %s", expression, answer)
+        return answer
 
 
 # ── JSON Schema для tool calling ──────────────────────────────────────────

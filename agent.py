@@ -21,11 +21,14 @@ from typing import Any, Callable, Optional
 import config
 from action_router import (
     RoutedAction,
+    classify_command,
     route_calculation,
     route_datetime,
     route_explicit_action,
+    route_system_action,
     route_web_intent,
 )
+from confirmation import ConfirmationResult, parse_confirmation
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
 from memory import MemoryManager
 from prompts import build_agent_system_prompt, build_web_system_prompt
@@ -143,7 +146,7 @@ class Agent:
         return self._ask_confirmation_keyboard()
 
     def _ask_confirmation_voice(self, tool_name: str, arguments: dict) -> bool:
-        """Голосовое подтверждение: TTS вопрос → STT ответ → паттерн-матчинг."""
+        """Голосовое подтверждение: TTS вопрос → STT ответ (is_confirmation=True) → быстрый парсер."""
         import stt
         import tts as tts_module
 
@@ -153,44 +156,30 @@ class Agent:
         # Озвучиваем вопрос (синхронно — speak() блокирует до конца воспроизведения)
         tts_module.speak(question)
 
-        # Записываем ответ с микрофона
-        logger.info("[CONFIRM] Listening for voice answer...")
+        # Записываем ответ с микрофона с облегчёнными фильтрами для коротких слов
+        logger.info("[CONFIRM] Listening for voice answer (confirmation mode)...")
         print("   🎤 Слушаю ваш ответ...")
-        spoken_text = stt.record_and_transcribe()
+        spoken_text = stt.record_and_transcribe(is_confirmation=True)
 
         if not spoken_text:
             logger.info("[CONFIRM] STT returned empty — fallback to keyboard")
             print("   (Не удалось распознать речь — введите ответ вручную)")
             return self._ask_confirmation_keyboard()
 
-        spoken_lower = spoken_text.lower().strip().rstrip(".")
         logger.info("[CONFIRM] Voice answer: '%s'", spoken_text)
+        result = parse_confirmation(spoken_text)
 
-        # Точное совпадение со словарями
-        if spoken_lower in self._CONFIRM_YES:
-            logger.info("[CONFIRM] Accepted (exact match: '%s')", spoken_lower)
+        if result == ConfirmationResult.TRUE:
+            logger.info("[CONFIRM] Accepted (TRUE) for '%s'", spoken_text)
             print(f"   ✔ Подтверждено голосом: \"{spoken_text}\"")
             return True
-
-        if spoken_lower in self._CONFIRM_NO:
-            logger.info("[CONFIRM] Rejected (exact match: '%s')", spoken_lower)
-            print(f"   ✖ Отменено голосом: \"{spoken_text}\"")
-            return False
-
-        # Подстрочный поиск (на случай "ну да давай" или "нет не надо")
-        words = set(spoken_lower.split())
-        if words & self._CONFIRM_YES:
-            logger.info("[CONFIRM] Accepted (substring match in: '%s')", spoken_text)
-            print(f"   ✔ Подтверждено голосом: \"{spoken_text}\"")
-            return True
-
-        if words & self._CONFIRM_NO:
-            logger.info("[CONFIRM] Rejected (substring match in: '%s')", spoken_text)
+        elif result == ConfirmationResult.FALSE:
+            logger.info("[CONFIRM] Rejected (FALSE) for '%s'", spoken_text)
             print(f"   ✖ Отменено голосом: \"{spoken_text}\"")
             return False
 
         # Не распознали как да/нет — fallback на клавиатуру
-        logger.info("[CONFIRM] Unrecognized voice answer '%s' — fallback to keyboard", spoken_text)
+        logger.info("[CONFIRM] Unrecognized confirmation '%s' (UNKNOWN) — fallback to keyboard", spoken_text)
         print(f"   (Не поняла ответ: \"{spoken_text}\" — введите вручную)")
         return self._ask_confirmation_keyboard()
 
@@ -291,7 +280,7 @@ class Agent:
         if action.tool_name == "open_app":
             app = payload.get("application") if payload else None
             if not app:
-                app = _APP_DISPLAY_NAMES.get(action.arguments["app_name"], action.arguments["app_name"])
+                app = _APP_DISPLAY_NAMES.get(action.arguments.get("app_name", "").lower(), action.arguments.get("app_name", "Приложение"))
             return self._remember_turn(user_text, f"{app} открыт."), tool_elapsed
         if action.tool_name in {"close_app", "close_target"}:
             app = payload.get("application") if payload else None
@@ -300,8 +289,17 @@ class Agent:
                 app = _APP_DISPLAY_NAMES.get(raw_arg.lower(), raw_arg)
             return self._remember_turn(user_text, f"{app} закрыт."), tool_elapsed
         if action.tool_name == "open_browser":
-            return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере."), tool_elapsed
-        if action.tool_name == "get_current_datetime":
+            url = action.arguments.get("url", "")
+            if "youtube.com" in url or "youtu.be" in url:
+                return self._remember_turn(user_text, "YouTube открыт."), tool_elapsed
+            if "spotify.com" in url:
+                return self._remember_turn(user_text, "Spotify открыт."), tool_elapsed
+            if "github.com" in url:
+                return self._remember_turn(user_text, "GitHub открыт."), tool_elapsed
+            if "telegram.org" in url or "t.me" in url:
+                return self._remember_turn(user_text, "Telegram открыт."), tool_elapsed
+            return self._remember_turn(user_text, f"Открыла {url} в браузере."), tool_elapsed
+        if action.tool_name in {"get_current_datetime", "list_removable_drives"}:
             return self._remember_turn(user_text, result), tool_elapsed
         if result.startswith("Ошибка"):
             return self._remember_turn(user_text, f"Не удалось выполнить вычисление: {result}"), tool_elapsed
@@ -385,42 +383,45 @@ class Agent:
         started_at = perf_counter()
         router_started_at = perf_counter()
 
-        # Every route starts with the same best-effort memory lifecycle.  Routed
-        # actions may not use it for reasoning, but recall and failure isolation
-        # are intentional rather than accidental CHAT-only behaviour.
+        # ── 1. FAST PATH: Check deterministic actions BEFORE touching memory ──
+        action = route_explicit_action(user_text)
+        if action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            answer, tool_elapsed = self._run_routed_action(user_text, action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
+            return answer
+
+        calculation = route_calculation(user_text)
+        if calculation is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", calculation.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
+            return answer
+
+        datetime_action = route_datetime(user_text)
+        if datetime_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", datetime_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
+            return answer
+
+        sys_action = route_system_action(user_text)
+        if sys_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", sys_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, sys_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
+            return answer
+
+        # ── 2. CONVERSATIONAL / WEB PIPELINE (requires memory context) ──
         try:
             memory_context = self.memory.prepare_context(user_text)
         except Exception as exc:
             logger.warning("[MEMORY] context preparation failed: %s", exc)
             memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
 
-        # 1. CLOSE / OPEN / SYSTEM ACTION
-        action = route_explicit_action(user_text)
-        if action is not None:
-            router_elapsed = perf_counter() - router_started_at
-            answer, tool_elapsed = self._run_routed_action(user_text, action)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 2. CALCULATION
-        calculation = route_calculation(user_text)
-        if calculation is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", calculation.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 3. DATETIME
-        datetime_action = route_datetime(user_text)
-        if datetime_action is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", datetime_action.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 4. WEB SEARCH
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -580,45 +581,49 @@ class Agent:
                 except Exception as exc:
                     logger.error("[STREAM] on_sentence callback error: %s", exc)
 
-        # Контекст памяти (best-effort)
-        try:
-            memory_context = self.memory.prepare_context(user_text)
-        except Exception as exc:
-            logger.warning("[MEMORY] context preparation failed: %s", exc)
-            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
-
-        # ── 1. Детерминированные маршруты (без стриминга LLM) ────────
-
-        # SYSTEM ACTIONS (open/close)
+        # ── 1. FAST PATH: Check deterministic actions BEFORE touching memory ──
         action = route_explicit_action(user_text)
         if action is not None:
             router_elapsed = perf_counter() - router_started_at
             answer, tool_elapsed = self._run_routed_action(user_text, action)
             _emit(answer)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
             return answer
 
-        # CALCULATION
         calculation = route_calculation(user_text)
         if calculation is not None:
             router_elapsed = perf_counter() - router_started_at
             logger.info("Fast router: %s", calculation.kind)
             answer, tool_elapsed = self._run_routed_action(user_text, calculation)
             _emit(answer)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
             return answer
 
-        # DATETIME
         datetime_action = route_datetime(user_text)
         if datetime_action is not None:
             router_elapsed = perf_counter() - router_started_at
             logger.info("Fast router: %s", datetime_action.kind)
             answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
             _emit(answer)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
             return answer
 
-        # WEB SEARCH
+        sys_action = route_system_action(user_text)
+        if sys_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", sys_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, sys_action)
+            _emit(answer)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, llm="SKIPPED", response=0.0)
+            return answer
+
+        # ── 2. CONVERSATIONAL / WEB PIPELINE (requires memory context) ──
+        try:
+            memory_context = self.memory.prepare_context(user_text)
+        except Exception as exc:
+            logger.warning("[MEMORY] context preparation failed: %s", exc)
+            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
+
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at

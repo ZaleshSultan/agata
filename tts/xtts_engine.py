@@ -27,32 +27,9 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_device(device_setting: str) -> str:
-    """Определить устройство: cuda или cpu.
-
-    Args:
-        device_setting: "auto", "cuda", or "cpu".
-
-    Returns:
-        "cuda" или "cpu".
-    """
-    if device_setting == "cpu":
-        return "cpu"
-
-    try:
-        import torch
-        if device_setting == "cuda" or device_setting == "auto":
-            if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0)
-                logger.info("[TTS] device=cuda, gpu=%s", gpu_name)
-                return "cuda"
-            else:
-                logger.info("[TTS] CUDA недоступна, используется CPU")
-                return "cpu"
-    except ImportError:
-        logger.warning("[TTS] PyTorch не установлен, используется CPU")
-        return "cpu"
-
-    return "cpu"
+    """Определить устройство: cuda или cpu через runtime_capabilities."""
+    from runtime_capabilities import resolve_tts_device
+    return resolve_tts_device(device_setting)
 
 
 def _validate_reference_audio(path: str) -> tuple[bool, str]:

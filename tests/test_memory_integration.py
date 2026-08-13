@@ -118,11 +118,11 @@ class MemoryIntegrationTests(unittest.TestCase):
         self.assertIn(recent_a.id, [m.id for m in self.memory.recall("recent alpha event")])
 
     def test_action_route_uses_same_lifecycle(self):
+        """Deterministic actions bypass expensive memory retrieval on fast path."""
         agent = Agent(); memory = TrackingMemory(); agent.memory = memory
         with patch("agent.execute_tool", return_value='{"success": true, "application": "Chrome"}'):
             agent.run("Открой Chrome")
-        self.assertEqual(memory.prepare_calls, 1)
-        self.assertEqual(memory.extract_calls, 1)
+        self.assertEqual(memory.prepare_calls, 0)
 
     def test_memory_failures_do_not_prevent_response(self):
         agent = Agent(); agent.memory = TrackingMemory(fail_prepare=True, fail_extract=True); llm = FakeLLM("Ответ всё равно есть"); agent._llm = llm

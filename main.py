@@ -30,9 +30,14 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Главный интерактивный цикл работы с Агатой."""
+    from runtime_capabilities import get_system_capabilities
+    caps = get_system_capabilities()
+
     print("=" * 60)
     print(f"  Голосовой ассистент {config.ASSISTANT_NAME} запущен.")
-    print("  Убедитесь, что Ollama запущена на localhost:11434")
+    print(f"  Аппаратное ускорение: GPU='{caps.gpu_name}', VRAM={caps.vram_total_mb:.0f}MB")
+    print(f"  STT (Whisper): device={caps.recommended_stt_device}, compute={caps.recommended_stt_compute}")
+    print(f"  TTS (XTTS): device={caps.recommended_tts_device}")
     print("  Нажмите Ctrl+C для выхода.")
     print("=" * 60)
     print()

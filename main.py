@@ -16,6 +16,7 @@ from agent import Agent
 import config
 import stt
 import tts
+from reminder_scheduler import ReminderScheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -44,6 +45,10 @@ def main() -> None:
 
     agent = Agent()
     tts.start()
+
+    # Запуск планировщика напоминаний
+    scheduler = ReminderScheduler(tts_speak_callback=tts.speak)
+    scheduler.start()
 
     try:
         while True:

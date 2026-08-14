@@ -35,6 +35,34 @@ def _get_connection() -> sqlite3.Connection:
     return conn
 
 
+def user_timezone():
+    """Configured timezone with a Windows-safe fallback when tzdata is absent."""
+    from zoneinfo import ZoneInfo
+    from datetime import timedelta, timezone
+    try:
+        return ZoneInfo(config.USER_TIMEZONE)
+    except Exception:
+        return timezone(timedelta(hours=5), config.USER_TIMEZONE)
+
+
+def get_due_reminders() -> list[dict]:
+    """Вернуть все невыполненные напоминания, время которых уже наступило."""
+    now_iso = datetime.now(user_timezone()).isoformat()
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT id, title, datetime_iso FROM reminders WHERE done = 0 AND datetime_iso <= ?",
+            (now_iso,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def mark_reminder_done(reminder_id: int) -> None:
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
+        conn.commit()
+
+
 def create_reminder(title: str, datetime_iso: str) -> str:
     """
     Создать напоминание.

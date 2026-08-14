@@ -137,32 +137,51 @@ class MemoryManager:
         if memory: memory.status = MemoryStatus.ARCHIVED; self.repository.update(memory)
 
     def extract(self, user_message: str, assistant_response: str = "", current_context: str = "") -> list[Memory]:
-        stored = [self.remember(c.content, c.memory_type, c.importance, c.confidence, c.source, metadata=c.metadata) for c in extract_candidates(user_message, assistant_response, current_context)]
+        if config.MEMORY_LLM_EXTRACTION_ENABLED:
+            try:
+                from memory.llm_extraction import LLMMemoryExtractor
+                context_dict = {"relevant_memories": current_context, "working_memory": "", "current_datetime": ""}
+                extractor = LLMMemoryExtractor()
+                candidates = extractor.extract(user_message, assistant_response, context_dict)
+                stored = [self.remember(c.content, c.memory_type, c.importance, c.confidence, c.source, metadata=c.metadata) for c in candidates]
+            except Exception as exc:
+                logger.warning("LLM-экстрактор упал, fallback на rule-based: %s", exc)
+                stored = [self.remember(c.content, c.memory_type, c.importance, c.confidence, c.source, metadata=c.metadata) for c in extract_candidates(user_message, assistant_response, current_context)]
+        else:
+            stored = [self.remember(c.content, c.memory_type, c.importance, c.confidence, c.source, metadata=c.metadata) for c in extract_candidates(user_message, assistant_response, current_context)]
         logger.info("[MEMORY] extracted %d candidates", len(stored)); return stored
 
     def consolidate(self, days: int = config.CONSOLIDATION_DAYS) -> list[Memory]:
         logger.info("[MEMORY] consolidation started")
         cutoff = datetime.now(user_timezone()) - timedelta(days=days)
-        episodes = []
-        for memory in self.repository.list_active():
-            if memory.memory_type is not MemoryType.EVENT or memory.consolidated_at:
+        all_processed: list[Memory] = []
+
+        for memory_type in MemoryType:
+            entries = [m for m in self.repository.list_active() if m.memory_type is memory_type and not m.consolidated_at]
+            if len(entries) < 2:
                 continue
-            created = datetime.fromisoformat((memory.created_at or "").replace("Z", "+00:00"))
-            created = created if created.tzinfo else created.replace(tzinfo=user_timezone())
-            if created >= cutoff:
-                episodes.append(memory)
-        self.repository.mark_consolidated(m.id for m in episodes if m.id is not None)
-        # Keep episodes available for audit/retrieval and add one compact semantic summary.
-        if len(episodes) > 1:
-            summary = "; ".join(m.content for m in episodes[:3])
-            semantic = Memory(
-                None, f"Консолидированное знание: {summary}", MemoryType.FACT,
-                max(m.importance for m in episodes), min(m.confidence for m in episodes),
-                source=MemorySource.CONSOLIDATION, embedding=self._embed(summary),
-                metadata={"episode_ids": [m.id for m in episodes]},
-            )
-            self.repository.create(semantic)
-        logger.info("[MEMORY] consolidation completed; processed=%d", len(episodes)); return episodes
+            episodes = []
+            for memory in entries:
+                created = datetime.fromisoformat((memory.created_at or "").replace("Z", "+00:00"))
+                created = created if created.tzinfo else created.replace(tzinfo=user_timezone())
+                if created >= cutoff:
+                    episodes.append(memory)
+            if len(episodes) < 2:
+                continue
+            self.repository.mark_consolidated(m.id for m in episodes if m.id is not None)
+            if len(episodes) > 1:
+                summary = "; ".join(m.content for m in episodes[:3])
+                semantic = Memory(
+                    None, f"Консолидированное знание ({memory_type.value}): {summary}", MemoryType.FACT,
+                    max(m.importance for m in episodes), min(m.confidence for m in episodes),
+                    source=MemorySource.CONSOLIDATION, embedding=self._embed(summary),
+                    metadata={"episode_ids": [m.id for m in episodes], "source_type": memory_type.value},
+                )
+                self.repository.create(semantic)
+            all_processed.extend(episodes)
+
+        logger.info("[MEMORY] consolidation completed; processed=%d", len(all_processed))
+        return all_processed
 
     def get_working_context(self) -> str:
         try: return working_memory.read()[:config.MEMORY_WORKING_CONTEXT_CHAR_BUDGET]

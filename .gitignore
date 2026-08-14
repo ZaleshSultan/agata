@@ -1,28 +1,30 @@
-# Python
-__pycache__/
+```
+# Compiled Python files
 *.pyc
+__pycache__/
+
+# Dependencies
 .venv/
 venv/
-*.egg-info/
+node_modules/
 
-# Данные — дневник, напоминания, рабочая память (личное, в репо не нужно)
-data/*.db
-data/working_memory.md
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
 
-# Модели TTS (тяжёлые бинарники, не для git)
-models/*.onnx
-models/*.onnx.json
+# Environment variables
+.env
+.env.local
+*.env.*
 
-# Временные аудиофайлы и reference voice
-*.wav
-temp_output.wav
-voices/*.wav
-!voices/README.md
-tts_output/
-
-# IDE
+# Editors
 .vscode/
 .idea/
 
-# Windows
-Thumbs.db
+# Build artifacts
+dist/
+build/
+*.o
+*.obj
+```

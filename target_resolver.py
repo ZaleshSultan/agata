@@ -60,6 +60,7 @@ _WEB_SERVICES: dict[str, tuple[str, str]] = {
     "telegram": ("https://web.telegram.org", "Telegram"),
     "телеграм": ("https://web.telegram.org", "Telegram"),
     "телега": ("https://web.telegram.org", "Telegram"),
+    "телегу": ("https://web.telegram.org", "Telegram"),
     "reddit": ("https://www.reddit.com", "Reddit"),
     "реддит": ("https://www.reddit.com", "Reddit"),
     "google": ("https://www.google.com", "Google"),
@@ -76,14 +77,17 @@ _WEB_SERVICES: dict[str, tuple[str, str]] = {
     "янндекс": ("https://yandex.ru", "Яндекс"),
     "steam": ("https://store.steampowered.com", "Steam"),
     "стим": ("https://store.steampowered.com", "Steam"),
+    "soundcloud": ("https://soundcloud.com", "SoundCloud"),
+    "саундклауд": ("https://soundcloud.com", "SoundCloud"),
 }
 
 # Синонимы имён программ для расширенного поиска
 _APP_ALIASES: dict[str, list[str]] = {
     "vscode": ["code", "vscode", "vs code", "visual studio code", "вс код", "vs код"],
     "chrome": ["chrome", "google chrome", "гугл хром", "гугл-хром", "хром"],
+    "firefox": ["firefox", "mozilla firefox", "файрфокс", "фаерфокс", "файерфокс", "мозилла"],
     "discord": ["discord", "дискорд"],
-    "telegram": ["telegram", "telegram desktop", "телеграм", "телега"],
+    "telegram": ["telegram", "telegram desktop", "телеграм", "телега", "телегу"],
     "spotify": ["spotify", "спотифай"],
     "steam": ["steam", "стим"],
     "notepad": ["notepad", "блокнот"],
@@ -102,6 +106,10 @@ _KNOWN_APP_PATHS: dict[str, list[str]] = {
         r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
         r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
         r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+    ],
+    "firefox": [
+        r"%ProgramFiles%\Mozilla Firefox\firefox.exe",
+        r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe",
     ],
     "discord": [
         r"%LOCALAPPDATA%\Discord\Update.exe",

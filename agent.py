@@ -18,6 +18,7 @@ import config
 from action_router import (
     RoutedAction,
     route_calculation,
+    route_content_play,
     route_datetime,
     route_explicit_action,
     route_media,
@@ -47,6 +48,7 @@ _COMPLEX_PATTERNS = (
 
 _APP_DISPLAY_NAMES = {
     "chrome": "Chrome",
+    "firefox": "Firefox",
     "vscode": "VS Code",
     "discord": "Discord",
     "telegram": "Telegram",
@@ -67,6 +69,7 @@ _ROUTER_HANDLED_TOOLS: set[str] = {
     "get_current_datetime",
     "control_volume",
     "control_media",
+    "play_content",
 }
 
 class Agent:
@@ -216,6 +219,12 @@ class Agent:
                 "previous": "Переключила на предыдущий трек.",
             }
             return self._remember_turn(user_text, labels.get(action.arguments["action"], "Готово.")), tool_elapsed
+        if action.tool_name == "play_content":
+            if payload and payload.get("success"):
+                title = payload.get("title") or action.arguments.get("query", "контент")
+                return self._remember_turn(user_text, f"Включила {title}."), tool_elapsed
+            reason = (payload.get("reason") or "Не удалось воспроизвести контент.") if payload else "Не удалось воспроизвести контент."
+            return self._remember_turn(user_text, f"Не удалось выполнить действие: {reason}"), tool_elapsed
         if result.startswith("Ошибка"):
             return self._remember_turn(user_text, f"Не удалось выполнить вычисление: {result}"), tool_elapsed
         return self._remember_turn(user_text, result), tool_elapsed
@@ -324,7 +333,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 3. CALCULATION
+        # 3. MEDIA TRANSPORT
         media_action = route_media(user_text)
         if media_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -333,7 +342,16 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 4. CALCULATION
+        # 4. CONTENT PLAY (YouTube / SoundCloud)
+        content_action = route_content_play(user_text)
+        if content_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", content_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, content_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 5. CALCULATION
         calculation = route_calculation(user_text)
         if calculation is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -342,7 +360,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 5. DATETIME
+        # 6. DATETIME
         datetime_action = route_datetime(user_text)
         if datetime_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -351,7 +369,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 6. WEB SEARCH
+        # 7. WEB SEARCH (incl. weather)
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at

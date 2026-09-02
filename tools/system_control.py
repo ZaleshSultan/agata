@@ -27,6 +27,10 @@ ALLOWED_APPS: dict[str, tuple[AppCommand, ...]] = {
         (r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",),
         (r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",),
     ),
+    "firefox": (
+        (r"%ProgramFiles%\Mozilla Firefox\firefox.exe",),
+        (r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe",),
+    ),
     "vscode": (
         (r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",),
         (r"%ProgramFiles%\Microsoft VS Code\Code.exe",),
@@ -40,12 +44,13 @@ ALLOWED_APPS: dict[str, tuple[AppCommand, ...]] = {
     ),
     "notepad": (("notepad.exe",),),
     "explorer": (("explorer.exe",),),
-    # Добавь свои пути к нужным приложениям
 }
 
 _PROCESS_NAMES = {
     "chrome": "chrome.exe",
     "google chrome": "chrome.exe",
+    "firefox": "firefox.exe",
+    "mozilla firefox": "firefox.exe",
     "vscode": "Code.exe",
     "vs code": "Code.exe",
     "visual studio code": "Code.exe",

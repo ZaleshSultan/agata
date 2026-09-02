@@ -85,6 +85,37 @@ _VERB_NORMALIZATIONS: list[tuple[re.Pattern[str], str]] = [
 # Whisper нередко ставит точку в конце: "открой хром." → "открой хром"
 _TRAILING_PUNCT = re.compile(r"[.!,;]+\s*$")
 
+# ── Нормализация имён сервисов / приложений из STT ───────────────────────
+# Whisper даёт вариации произношений; приводим к каноническому виду,
+# который совпадает с alias'ами в target_resolver и action_router.
+_SERVICE_NAME_NORMALIZATIONS: dict[str, str] = {
+    "саундклауде": "саундклауд",
+    "саунд клауде": "саундклауд",
+    "саунд клауд": "саундклауд",
+    "саунд-клауд": "саундклауд",
+    "файерфокс": "файрфокс",
+    "фаерфокс": "файрфокс",
+    "фаер фокс": "файрфокс",
+    "файер фокс": "файрфокс",
+    "ю туб": "ютуб",
+    "ю-туб": "ютуб",
+}
+
+# Build a compiled regex for service name replacement (longest match first)
+_SERVICE_NAME_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(k) for k in sorted(_SERVICE_NAME_NORMALIZATIONS, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_service_names(text: str) -> str:
+    """Привести STT-вариации имён сервисов к каноническому виду."""
+    def _replace(match: re.Match[str]) -> str:
+        return _SERVICE_NAME_NORMALIZATIONS.get(match.group(0).lower(), match.group(0))
+    return _SERVICE_NAME_RE.sub(_replace, text)
+
 
 def _correct_assistant_name(text: str) -> str:
     """Исправить ошибочные варианты имени ассистента как отдельного слова."""
@@ -141,6 +172,7 @@ def normalize_stt(raw: str) -> str:
         raw text
           → исправить имя ассистента (Огадок → Агата)
           → убрать обращение (Агата, → stripped)
+          → нормализовать имена сервисов (саундклауде → саундклауд)
           → убрать вводные фразы (можешь открыть → открой)
           → нормализовать форму глагола (открою → открой)
           → убрать trailing punct (открой хром. → открой хром)
@@ -158,6 +190,7 @@ def normalize_stt(raw: str) -> str:
 
     text = _correct_assistant_name(text)
     text = _strip_assistant_address(text)
+    text = _normalize_service_names(text)
     text = _strip_filler_phrases(text)
     text = _normalize_verb_form(text)
     text = _TRAILING_PUNCT.sub("", text).strip()

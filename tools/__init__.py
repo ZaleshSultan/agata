@@ -16,6 +16,7 @@ import logging
 from typing import Any, Callable
 
 from tools import calc
+from tools import content_play
 from tools import datetime_tool
 from tools import memory as memory_tools
 from tools import osint as osint_tools
@@ -36,6 +37,12 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "function": calc.calculate,
         "schema": calc.TOOL_DEFINITION,
         "requires_confirmation": calc.TOOL_DEFINITION["requires_confirmation"],
+    },
+    # Воспроизведение контента (YouTube / SoundCloud)
+    "play_content": {
+        "function": content_play.play_content,
+        "schema": content_play.TOOL_DEFINITION,
+        "requires_confirmation": content_play.TOOL_DEFINITION["requires_confirmation"],
     },
     # Дата/время
     "get_current_datetime": {
@@ -128,7 +135,6 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "requires_confirmation": system_control.COPY_PROJECT_SNAPSHOT_DEFINITION["requires_confirmation"],
     },
 }
-
 
 
 def get_tool_schemas(exclude: set[str] | None = None) -> list[dict]:

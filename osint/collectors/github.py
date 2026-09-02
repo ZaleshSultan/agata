@@ -30,12 +30,17 @@ class GitHubCollector:
                 data = response.json()
                 profile = Entity(EntityType.SOCIAL, data["html_url"], label="GitHub", attributes={
                     "platform": "GitHub", "username": data.get("login", subject.value), "display_name": data.get("name") or "",
-                    "bio": data.get("bio") or "", "website": data.get("blog") or "", "organization": data.get("company") or "",
+                    "bio": data.get("bio") or "", "website": data.get("blog") or "", "organization": data.get("company") or "", "public_email": data.get("email") or "", "created_at": data.get("created_at") or "", "updated_at": data.get("updated_at") or "",
                 })
                 proof = Evidence("Public GitHub profile returned by GitHub API.", profile.value, source=self.spec.name)
                 profile.evidence_ids.append(proof.id)
                 observation = Observation(profile.id, f"GitHub profile {data.get('login', subject.value)} was publicly returned.", evidence_ids=[proof.id], source=self.spec.name)
-                outcome = CollectorOutcome(self.spec.name, True, [profile], [proof], [observation], requests=1, elapsed_ms=int((perf_counter()-started)*1000))
+                entities, proofs, observations = [profile], [proof], [observation]
+                for field, kind in (("email", EntityType.EMAIL), ("blog", EntityType.WEBSITE), ("company", EntityType.ORGANIZATION)):
+                    value = str(data.get(field) or "").strip()
+                    if value:
+                        child = Entity(kind, value, label=value, attributes={"publicly_exposed_by": "GitHub"}); child.evidence_ids.append(proof.id); entities.append(child)
+                outcome = CollectorOutcome(self.spec.name, True, entities, proofs, observations, requests=1, elapsed_ms=int((perf_counter()-started)*1000))
             else:
                 outcome = CollectorOutcome(self.spec.name, False, errors=[f"GitHub returned HTTP {response.status_code}"], requests=1, elapsed_ms=int((perf_counter()-started)*1000))
         except Exception as exc:

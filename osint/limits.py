@@ -20,12 +20,16 @@ class InvestigationLimits:
     max_pages: int = config.OSINT_MAX_PAGES
     max_depth: int = config.OSINT_MAX_DEPTH
     max_parallel_tasks: int = config.OSINT_MAX_PARALLEL_TASKS
+    max_ai_calls: int = config.OSINT_MAX_AI_CALLS
+    max_image_ai_calls: int = config.OSINT_MAX_IMAGE_AI_CALLS
+    max_reverse_image_calls: int = config.OSINT_MAX_REVERSE_IMAGE_CALLS
 
 
 class Budget:
     def __init__(self, limits: InvestigationLimits) -> None:
         self.limits, self.started_at = limits, monotonic()
         self.requests = self.pages = 0
+        self.ai_calls = self.image_ai_calls = self.reverse_image_calls = 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -42,3 +46,8 @@ class Budget:
         if self.pages + pages > self.limits.max_pages:
             raise BudgetExceeded("Investigation page budget exhausted.")
         self.requests += 1; self.pages += pages
+
+    def consume_ai(self, image: bool = False) -> None:
+        if self.ai_calls >= self.limits.max_ai_calls or (image and self.image_ai_calls >= self.limits.max_image_ai_calls):
+            raise BudgetExceeded("AI analysis budget exhausted.")
+        self.ai_calls += 1; self.image_ai_calls += int(image)

@@ -45,9 +45,21 @@ class LocalOpenAIProvider(OpenRouterProvider):
         async with httpx.AsyncClient(timeout=config.OSINT_REQUEST_TIMEOUT_SECONDS) as client: response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
         response.raise_for_status(); return AIAnalysis(response.json()["choices"][0]["message"]["content"])
 
-def configured_provider() -> GeminiProvider | OpenRouterProvider | None:
-    provider, model = config.OSINT_AI_PROVIDER.casefold(), config.OSINT_AI_MODEL
-    if provider == "gemini" and model: return GeminiProvider(model, config.OSINT_AI_API_KEY or config.GEMINI_API_KEY)
-    if provider == "openrouter" and model: return OpenRouterProvider(model, config.OSINT_AI_API_KEY or config.OPENROUTER_API_KEY)
-    if provider == "local" and model: return LocalOpenAIProvider(model, config.OSINT_AI_BASE_URL, config.OSINT_AI_API_KEY)
-    return None
+def configured_providers() -> list[GeminiProvider | OpenRouterProvider | LocalOpenAIProvider]:
+    providers = []
+    settings = ((config.OSINT_AI_PROVIDER.casefold(), config.OSINT_AI_MODEL, config.OSINT_AI_API_KEY), (config.OSINT_AI_FALLBACK_PROVIDER.casefold(), config.OSINT_AI_FALLBACK_MODEL, config.OSINT_AI_FALLBACK_API_KEY))
+    for provider, model, key in settings:
+        if provider == "gemini" and model: providers.append(GeminiProvider(model, key or config.GEMINI_API_KEY))
+        elif provider == "openrouter" and model: providers.append(OpenRouterProvider(model, key or config.OPENROUTER_API_KEY))
+        elif provider == "local" and model: providers.append(LocalOpenAIProvider(model, config.OSINT_AI_BASE_URL, key))
+    return providers
+
+async def analyze_with_fallback(image: bytes, prompt: str) -> tuple[AIAnalysis, str]:
+    errors = []
+    for provider in configured_providers():
+        try: return await provider.analyze_image(image, prompt), provider.name
+        except Exception as exc: errors.append(f"{provider.name}: {exc}")
+    raise ProviderUnavailableError("No configured AI provider succeeded: " + "; ".join(errors or ["none configured"]))
+
+def configured_provider() -> GeminiProvider | OpenRouterProvider | LocalOpenAIProvider | None:
+    return next(iter(configured_providers()), None)

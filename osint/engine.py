@@ -76,6 +76,7 @@ class OSINTEngine:
         except Exception as exc:
             context.errors.append(f"Image metadata extraction failed: {exc}")
         try:
+            if configured_provider() is not None: context.budget.consume_ai(image=True)
             evidence, observations = await analyze_visual_clues(image, image_entity.id, configured_provider())
             for item in evidence: context.add_evidence(item)
             for item in observations: context.add_observation(item)
@@ -84,7 +85,7 @@ class OSINTEngine:
 
     @staticmethod
     def _result(context: InvestigationContext, folder: Path) -> dict[str, Any]:
-        return {"success": True, "investigation_id": context.investigation_id, "target": context.target, "target_type": context.target_type, "report_path": str(folder / "report.md"), "entities": [item.to_dict() for item in context.entities.values()], "relations": [item.to_dict() for item in context.relations.values()], "evidence": [item.to_dict() for item in context.evidence.values()], "metrics": {"runtime_seconds": round(context.budget.elapsed_seconds, 3), "requests": context.budget.requests, "cache_hits": context.cache.hits, "entities_discovered": len(context.entities), "provider_timings_ms": context.timings_ms}, "errors": context.errors}
+        return {"success": True, "investigation_id": context.investigation_id, "target": context.target, "target_type": context.target_type, "report_path": str(folder / "report.md"), "entities": [item.to_dict() for item in context.entities.values()], "relations": [item.to_dict() for item in context.relations.values()], "evidence": [item.to_dict() for item in context.evidence.values()], "metrics": {"runtime_seconds": round(context.budget.elapsed_seconds, 3), "requests": context.budget.requests, "pages": context.budget.pages, "cache_hits": context.cache.hits, "entities_discovered": len(context.entities), "relations_found": len(context.relations), "evidence_count": len(context.evidence), "ai_calls": context.budget.ai_calls, "provider_timings_ms": context.timings_ms}, "errors": context.errors}
 
 
 _DEFAULT_ENGINE: OSINTEngine | None = None

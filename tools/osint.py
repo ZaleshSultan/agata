@@ -17,7 +17,9 @@ def investigate_person(target: str, target_type: str = "auto", depth: str = "sta
         except OSError as exc: return json.dumps({"success": False, "error": f"Unable to read image: {exc}"}, ensure_ascii=False)
     try:
         result = asyncio.run(investigate(target, target_type=target_type, image=image, depth=depth))
-        return json.dumps(result, ensure_ascii=False)
+        metrics = result.get("metrics", {})
+        compact = {"success": result.get("success", False), "investigation_id": result.get("investigation_id", ""), "target": target, "runtime": metrics.get("runtime_seconds", 0), "entities_found": metrics.get("entities_discovered", 0), "relations_found": metrics.get("relations_found", 0), "evidence_count": metrics.get("evidence_count", 0), "confidence": max((item.get("confidence", 0) for item in result.get("relations", [])), default=0.0), "summary": f"Investigation completed with {metrics.get('entities_discovered', 0)} entities and {metrics.get('evidence_count', 0)} evidence items.", "report_path": result.get("report_path", ""), "errors": result.get("errors", [])}
+        return json.dumps(compact, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"success": False, "error": f"Investigation failed: {exc}"}, ensure_ascii=False)
 

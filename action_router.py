@@ -40,6 +40,13 @@ _APPLICATION_ALIASES = {
     "гугл хром": "chrome",
     "гугл-хром": "chrome",
     "хром": "chrome",
+    # Firefox
+    "firefox": "firefox",
+    "mozilla firefox": "firefox",
+    "файрфокс": "firefox",
+    "фаерфокс": "firefox",
+    "файерфокс": "firefox",
+    "мозилла": "firefox",
     # VS Code
     "vscode": "vscode",
     "vs code": "vscode",
@@ -53,6 +60,7 @@ _APPLICATION_ALIASES = {
     "telegram": "telegram",
     "телеграм": "telegram",
     "телега": "telegram",
+    "телегу": "telegram",
     # Spotify
     "spotify": "spotify",
     "спотифай": "spotify",
@@ -79,6 +87,9 @@ _EXTERNAL_FACT_PATTERNS = (
     "какая сейчас цена", "текущая цена", "курс валют", "актуальн",
     "что произошло сегодня", "что произошло", "новости про",
     "что сейчас известно",
+    # Weather / погода
+    "погод", "прогноз погоды", "прогноз на", "температур",
+    "weather", "forecast",
 )
 _CONVERSATIONAL_EXCLUSIONS = (
     "как дела", "поговорим", "что думаешь", "расскажи мне",
@@ -145,10 +156,20 @@ _VOLUME_WORD_RE = re.compile(r"\b(?:громкость|звук|volume)\b", re.I
 _VOLUME_SET_RE = re.compile(r"^\s*(?:поставь|установи|выставь)\s+(?:на\s+)?\d{1,3}\s*(?:%|процент(?:а|ов)?)?\s*$", re.IGNORECASE)
 _PERCENT_RE = re.compile(r"\b(?P<number>\d{1,3})\s*(?:%|процент(?:а|ов)?)?\b", re.IGNORECASE)
 _MEDIA_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Bare pause/resume — highest priority, unambiguous
+    (re.compile(r"^\s*(?:пауза|на паузу|поставь на паузу)\s*[.!]?\s*$", re.IGNORECASE), "play_pause"),
+    (re.compile(r"^\s*(?:продолжи|возобнови|продолжить|возобновить)\s*[.!]?\s*$", re.IGNORECASE), "play_pause"),
+    # Inline pause/resume
     (re.compile(r"\b(?:пауз\w*|приостанови|продолжи|возобнови)\b", re.IGNORECASE), "play_pause"),
+    # Next/previous — allow bare "следующая" / "предыдущая" (with optional трек/песня)
+    (re.compile(r"^\s*(?:следующ(?:ий|ая|ее))\s*(?:трек|песн\w*|композиц\w*)?\s*[.!]?\s*$", re.IGNORECASE), "next"),
+    (re.compile(r"^\s*(?:предыдущ(?:ий|ая|ее))\s*(?:трек|песн\w*|композиц\w*)?\s*[.!]?\s*$", re.IGNORECASE), "previous"),
     (re.compile(r"\b(?:следующ(?:ий|ую)|переключи)\s+(?:трек|песн|композиц)", re.IGNORECASE), "next"),
     (re.compile(r"\b(?:предыдущ(?:ий|ую)|назад)\s+(?:трек|песн|композиц)", re.IGNORECASE), "previous"),
+    (re.compile(r"\b(?:переключи)\s+(?:трек|песн|композиц)", re.IGNORECASE), "next"),
+    # Music transport
     (re.compile(r"\b(?:останови|выключи|включи|запусти)\s+(?:музык|песн|трек|воспроизведени)", re.IGNORECASE), "play_pause"),
+    # English variants
     (re.compile(r"\b(?:pause|resume)\b|\b(?:play|stop|start)\s+(?:the\s+)?(?:music|song|track|playback)\b", re.IGNORECASE), "play_pause"),
     (re.compile(r"\b(?:next|skip)\s+(?:song|track)\b", re.IGNORECASE), "next"),
     (re.compile(r"\b(?:previous|prev)\s+(?:song|track)\b", re.IGNORECASE), "previous"),
@@ -345,3 +366,108 @@ def route_web_intent(user_text: str) -> RoutedAction | None:
         logger.info("[WEB] query='%s'", user_text.strip())
         return RoutedAction("WEB_SEARCH", "web_search", {"query": user_text.strip()})
     return None
+
+
+# ── Content play routing ─────────────────────────────────────────────────
+
+# Platform aliases extracted from user text ("в саундклауде", "на ютубе")
+_PLATFORM_ALIASES: dict[str, str] = {
+    "ютуб": "youtube",
+    "ютубе": "youtube",
+    "youtube": "youtube",
+    "саундклауд": "soundcloud",
+    "саундклауде": "soundcloud",
+    "soundcloud": "soundcloud",
+    "спотифай": "spotify",
+    "spotify": "spotify",
+}
+
+# Regex to detect platform suffix: "в саундклауде", "на ютубе", "в youtube"
+_PLATFORM_SUFFIX_RE = re.compile(
+    r"\s+(?:в|на|through|on|in)\s+(?P<platform>"
+    + "|".join(re.escape(k) for k in sorted(_PLATFORM_ALIASES, key=len, reverse=True))
+    + r")\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+# Content play verbs — commands that request playing specific content
+_CONTENT_PLAY_VERB = re.compile(
+    r"^\s*(?:поставь|послушай|послушать|включи|запусти|воспроизведи|воспроизвести|сыграй|проиграй)\s+",
+    re.IGNORECASE,
+)
+
+# Exclusions: phrases that look like content play but aren't
+_CONTENT_PLAY_EXCLUSIONS = re.compile(
+    r"\b(?:"
+    r"на паузу"
+    r"|дневник"
+    r"|запись в"
+    r"|запись$"
+    r"|таймер"
+    r"|будильник"
+    r"|напоминани"
+    r"|громкость"
+    r"|звук"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Bare media objects — if the ENTIRE object after the verb is just one of these,
+# it's media transport, not content play. "включи музыку" → media, but
+# "включи рок музыку" → content play.
+_BARE_MEDIA_OBJECTS = re.compile(
+    r"^\s*(?:музык\w*|песн\w*|трек\w*|воспроизведени\w*|плейлист\w*)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def route_content_play(user_text: str) -> RoutedAction | None:
+    """Detect content search/play intent deterministically.
+
+    Distinguishes:
+    - "поставь на паузу" → NOT content (media transport)
+    - "поставь запись в дневник" → NOT content (diary)
+    - "поставь музыку" → NOT content (bare media → media transport)
+    - "поставь лекцию про нейробиологию" → CONTENT (YouTube default)
+    - "поставь Монополию в саундклауде" → CONTENT (SoundCloud explicit)
+    """
+    clean = _clean_command_for_routing(user_text)
+    if not clean:
+        return None
+
+    # Must start with a content play verb
+    verb_match = _CONTENT_PLAY_VERB.match(clean)
+    if not verb_match:
+        return None
+
+    remainder = clean[verb_match.end():].strip().rstrip(" .,!?:;\"'")
+    if not remainder:
+        return None
+
+    # Exclude diary, timer, volume, pause commands
+    if _CONTENT_PLAY_EXCLUSIONS.search(remainder):
+        return None
+
+    # Extract platform if present
+    platform: str = "youtube"  # default
+    query = remainder
+
+    platform_match = _PLATFORM_SUFFIX_RE.search(remainder)
+    if platform_match:
+        platform_key = platform_match.group("platform").lower()
+        resolved_platform = _PLATFORM_ALIASES.get(platform_key)
+        if resolved_platform:
+            platform = resolved_platform
+            # Remove platform suffix from query
+            query = remainder[:platform_match.start()].strip().rstrip(" .,!?:;\"'")
+
+    # If the remaining query is a bare media object → media transport, not content
+    if _BARE_MEDIA_OBJECTS.fullmatch(query):
+        return None
+
+    if not query:
+        return None
+
+    logger.info("[ROUTER] command='%s'", user_text)
+    logger.info("[ROUTER] action=PLAY_CONTENT query='%s' platform='%s'", query, platform)
+    return RoutedAction("PLAY_CONTENT", "play_content", {"query": query, "platform": platform})

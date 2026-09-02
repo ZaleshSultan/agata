@@ -18,8 +18,10 @@ from typing import Any, Callable
 from tools import calc
 from tools import datetime_tool
 from tools import memory as memory_tools
+from tools import osint as osint_tools
 from tools import reminder
 from tools import system_control
+from tools import volume
 from tools import web_search
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,24 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "function": lambda **_: reminder.list_reminders(),
         "schema": reminder.LIST_REMINDERS_DEFINITION,
         "requires_confirmation": reminder.LIST_REMINDERS_DEFINITION["requires_confirmation"],
+    },
+    # Громкость
+    "control_volume": {
+        "function": volume.control_volume,
+        "schema": volume.TOOL_DEFINITION,
+        "requires_confirmation": volume.TOOL_DEFINITION["requires_confirmation"],
+    },
+    # Media transport (small deterministic Windows-only surface)
+    "control_media": {
+        "function": system_control.control_media,
+        "schema": system_control.CONTROL_MEDIA_DEFINITION,
+        "requires_confirmation": system_control.CONTROL_MEDIA_DEFINITION["requires_confirmation"],
+    },
+    # One bounded investigation capability; internal collectors stay invisible to the LLM.
+    "investigate_person": {
+        "function": osint_tools.investigate_person,
+        "schema": osint_tools.TOOL_DEFINITION,
+        "requires_confirmation": osint_tools.TOOL_DEFINITION["requires_confirmation"],
     },
     # Веб-поиск
     "web_search": {

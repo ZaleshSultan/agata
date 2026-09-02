@@ -95,6 +95,65 @@ _DATETIME_PATTERNS = (
 
 _MATH_EXPRESSION = re.compile(r"^[0-9\s+\-*/().,%]+$")
 
+_NUMBER_WORDS = {
+    "ноль": 0,
+    "один": 1,
+    "одна": 1,
+    "одно": 1,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+    "одиннадцать": 11,
+    "двенадцать": 12,
+    "тринадцать": 13,
+    "четырнадцать": 14,
+    "пятнадцать": 15,
+    "шестнадцать": 16,
+    "семнадцать": 17,
+    "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20,
+    "тридцать": 30,
+    "сорок": 40,
+    "пятьдесят": 50,
+    "шестьдесят": 60,
+    "семьдесят": 70,
+    "восемьдесят": 80,
+    "девяносто": 90,
+    "сто": 100,
+}
+_NUMBER_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(map(re.escape, _NUMBER_WORDS), key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+_VOLUME_DOWN_RE = re.compile(
+    r"\b(?:уменьши|уменьшу|уменьшить|уменьшай|убавь|убавлю|убавить|убавляй|снизь|снижу|снизить|понизь|понижу|понизить|тише|потише|меньше|он\s+меньше)\b",
+    re.IGNORECASE,
+)
+_VOLUME_UP_RE = re.compile(
+    r"\b(?:увеличь|увеличу|увеличить|увеличивай|прибавь|прибавлю|прибавить|подними|подниму|поднять|повысь|повышу|повысить|громче|погромче|больше)\b",
+    re.IGNORECASE,
+)
+_VOLUME_WORD_RE = re.compile(r"\b(?:громкость|звук|volume)\b", re.IGNORECASE)
+_VOLUME_SET_RE = re.compile(r"^\s*(?:поставь|установи|выставь)\s+(?:на\s+)?\d{1,3}\s*(?:%|процент(?:а|ов)?)?\s*$", re.IGNORECASE)
+_PERCENT_RE = re.compile(r"\b(?P<number>\d{1,3})\s*(?:%|процент(?:а|ов)?)?\b", re.IGNORECASE)
+_MEDIA_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:пауз\w*|приостанови|продолжи|возобнови)\b", re.IGNORECASE), "play_pause"),
+    (re.compile(r"\b(?:следующ(?:ий|ую)|переключи)\s+(?:трек|песн|композиц)", re.IGNORECASE), "next"),
+    (re.compile(r"\b(?:предыдущ(?:ий|ую)|назад)\s+(?:трек|песн|композиц)", re.IGNORECASE), "previous"),
+    (re.compile(r"\b(?:останови|выключи|включи|запусти)\s+(?:музык|песн|трек|воспроизведени)", re.IGNORECASE), "play_pause"),
+    (re.compile(r"\b(?:pause|resume)\b|\b(?:play|stop|start)\s+(?:the\s+)?(?:music|song|track|playback)\b", re.IGNORECASE), "play_pause"),
+    (re.compile(r"\b(?:next|skip)\s+(?:song|track)\b", re.IGNORECASE), "next"),
+    (re.compile(r"\b(?:previous|prev)\s+(?:song|track)\b", re.IGNORECASE), "previous"),
+)
+
 
 def _clean_command_for_routing(text: str) -> str:
     """Нормализация текста команды для детерминированного роутинга."""
@@ -111,6 +170,24 @@ def _clean_command_for_routing(text: str) -> str:
         flags=re.IGNORECASE,
     )
     return cleaned.strip()
+
+
+def _replace_words_with_numbers(text: str) -> str:
+    """Convert simple Russian number words to digits before regex routing."""
+    def replace(match: re.Match[str]) -> str:
+        return str(_NUMBER_WORDS[match.group(0).casefold().replace("ё", "е")])
+
+    return _NUMBER_WORD_RE.sub(replace, text.replace("ё", "е"))
+
+
+def _first_percent(text: str) -> str | None:
+    match = _PERCENT_RE.search(text)
+    if not match:
+        return None
+    number = int(match.group("number"))
+    if 0 <= number <= 100:
+        return str(number)
+    return None
 
 
 def route_explicit_action(user_text: str) -> RoutedAction | None:
@@ -189,6 +266,55 @@ def route_explicit_action(user_text: str) -> RoutedAction | None:
         logger.info("[ROUTER] detected action=OPEN_APP target='%s' (alias fallback, no resolved path)", alias_app_name)
         return RoutedAction("OPEN_APP", "open_app", {"app_name": alias_app_name})
 
+    return None
+
+
+def route_volume(user_text: str) -> RoutedAction | None:
+    """Recognize direct volume changes without sending them to the LLM."""
+    normalized = " ".join(_replace_words_with_numbers(user_text).casefold().split())
+    if not normalized or not (
+        _VOLUME_WORD_RE.search(normalized)
+        or _VOLUME_DOWN_RE.search(normalized)
+        or _VOLUME_UP_RE.search(normalized)
+        or _VOLUME_SET_RE.fullmatch(normalized)
+    ):
+        return None
+
+    amount = _first_percent(normalized)
+    is_down = bool(_VOLUME_DOWN_RE.search(normalized))
+    is_up = bool(_VOLUME_UP_RE.search(normalized))
+
+    if is_down and amount is not None:
+        return RoutedAction("VOLUME", "control_volume", {"action": "volume_down", "step": amount})
+    if is_up and amount is not None:
+        return RoutedAction("VOLUME", "control_volume", {"action": "volume_up", "step": amount})
+    if is_down:
+        return RoutedAction("VOLUME", "control_volume", {"action": "volume_down"})
+    if is_up:
+        return RoutedAction("VOLUME", "control_volume", {"action": "volume_up"})
+
+    # Absolute setting: "громкость 30", "поставь громкость 30",
+    # "установи громкость на 30". Relative commands with "меньше/тише/громче"
+    # were handled above, so "громкость на 30 меньше" cannot become volume_set.
+    if amount is not None and (_VOLUME_WORD_RE.search(normalized) or _VOLUME_SET_RE.fullmatch(normalized)):
+        return RoutedAction("VOLUME", "control_volume", {"action": "volume_set", "level": amount})
+
+    return None
+
+
+def route_media(user_text: str) -> RoutedAction | None:
+    """Route unambiguous media transport commands before the LLM.
+
+    Bare words such as ``play`` are intentionally excluded: they are common in
+    ordinary conversation (for example, "play a game") and must not trigger a
+    global media key.
+    """
+    normalized = " ".join(user_text.casefold().split())
+    if not normalized:
+        return None
+    for pattern, action in _MEDIA_PATTERNS:
+        if pattern.search(normalized):
+            return RoutedAction("MEDIA", "control_media", {"action": action})
     return None
 
 

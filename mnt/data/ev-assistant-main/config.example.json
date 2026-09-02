@@ -1,0 +1,38 @@
+{
+  "_readme": "Copy this to config.json and fill it in. Defaults are fully free/local (Ollama + Whisper + browser voice) and need no API keys. For nicer speech, add an ElevenLabs key and set tts_provider to 'elevenlabs'.",
+
+  "llm_provider": "ollama",
+  "ollama_model": "gemma2:9b",
+  "ollama_url": "http://localhost:11434",
+
+  "stt_provider": "whisper",
+  "whisper_model": "small",
+  "whisper_dir": "",
+
+  "tts_provider": "browser",
+  "elevenlabs_api_key": "",
+  "elevenlabs_voice_id": "",
+
+  "anthropic_api_key": "",
+
+  "_language": "'en' (English) or 'tr' (Turkish) — the language E.V. listens, thinks and speaks in.",
+  "language": "en",
+
+  "user_name": "YOUR NAME",
+  "user_address": "YOUR NAME",
+  "city": "London",
+
+  "pc_control": true,
+  "conversation_mode": true,
+
+  "_memory": "history_turns: how many recent messages stay in context (raise for long chats / RP). num_ctx: Ollama context window in tokens. Larger needs more VRAM; if VRAM is free you can raise it to 8192, and E.V. auto-falls-back to a smaller window when the GPU is busy (e.g. a game is running).",
+  "history_turns": 30,
+  "num_ctx": 4096,
+
+  "browser_url": "https://www.google.com",
+  "obsidian_inbox_path": "",
+
+  "_cache_paths": "Optional. Redirect Ollama model + Playwright browser caches off the system drive (e.g. 'D:\\AI\\ollama\\models'). Leave empty to use each tool's default location.",
+  "ollama_models_path": "",
+  "playwright_browsers_path": ""
+}

@@ -20,6 +20,8 @@ from action_router import (
     route_calculation,
     route_datetime,
     route_explicit_action,
+    route_media,
+    route_volume,
     route_web_intent,
 )
 from llm import LocalLLM, OllamaUnavailableError, ToolCallParseError
@@ -63,6 +65,8 @@ _ROUTER_HANDLED_TOOLS: set[str] = {
     "open_browser",
     "web_search",
     "get_current_datetime",
+    "control_volume",
+    "control_media",
 }
 
 class Agent:
@@ -198,6 +202,20 @@ class Agent:
             return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере."), tool_elapsed
         if action.tool_name == "get_current_datetime":
             return self._remember_turn(user_text, result), tool_elapsed
+        if action.tool_name == "control_volume":
+            volume = payload.get("volume") if payload else None
+            if action.arguments.get("action") == "volume_set":
+                return self._remember_turn(user_text, f"Громкость установлена на {volume}%."), tool_elapsed
+            if action.arguments.get("action") == "volume_up":
+                return self._remember_turn(user_text, f"Громкость увеличена до {volume}%."), tool_elapsed
+            return self._remember_turn(user_text, f"Громкость уменьшена до {volume}%."), tool_elapsed
+        if action.tool_name == "control_media":
+            labels = {
+                "play_pause": "Воспроизведение переключено.",
+                "next": "Переключила на следующий трек.",
+                "previous": "Переключила на предыдущий трек.",
+            }
+            return self._remember_turn(user_text, labels.get(action.arguments["action"], "Готово.")), tool_elapsed
         if result.startswith("Ошибка"):
             return self._remember_turn(user_text, f"Не удалось выполнить вычисление: {result}"), tool_elapsed
         return self._remember_turn(user_text, result), tool_elapsed
@@ -297,7 +315,25 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 2. CALCULATION
+        # 2. VOLUME
+        volume_action = route_volume(user_text)
+        if volume_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", volume_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, volume_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 3. CALCULATION
+        media_action = route_media(user_text)
+        if media_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", media_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, media_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 4. CALCULATION
         calculation = route_calculation(user_text)
         if calculation is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -306,7 +342,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 3. DATETIME
+        # 5. DATETIME
         datetime_action = route_datetime(user_text)
         if datetime_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -315,7 +351,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 4. WEB SEARCH
+        # 6. WEB SEARCH
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at

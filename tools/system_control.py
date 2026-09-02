@@ -228,6 +228,35 @@ def close_target(target: str, kind: str = "browser", url: str = "") -> str:
     return close_app(target)
 
 
+_MEDIA_VIRTUAL_KEYS = {
+    "play_pause": 0xB3,
+    "next": 0xB0,
+    "previous": 0xB1,
+}
+
+
+def control_media(action: str) -> str:
+    """Send one non-destructive global media key on Windows.
+
+    This is deliberately limited to transport controls.  It does not add the
+    arbitrary command, mouse, or power controls found in E.V.
+    """
+    key = _MEDIA_VIRTUAL_KEYS.get(action)
+    if key is None:
+        return _tool_result(False, error=f"Неподдерживаемая media-команда: {action}")
+    if os.name != "nt":
+        return _tool_result(False, error="Управление медиа поддерживается только в Windows.")
+    try:
+        import ctypes
+
+        ctypes.windll.user32.keybd_event(key, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(key, 0, 0x0002, 0)
+        return _tool_result(True, action=action)
+    except Exception as exc:
+        logger.error("[MEDIA] failed: %s", exc)
+        return _tool_result(False, error=f"Не удалось отправить media-команду: {exc}")
+
+
 def list_removable_drives() -> str:
     """
     Находит подключённые съёмные диски (флешки) в системе.
@@ -351,6 +380,25 @@ CLOSE_TARGET_DEFINITION: dict = {
                 },
             },
             "required": ["target"],
+        },
+    },
+    "requires_confirmation": False,
+}
+
+CONTROL_MEDIA_DEFINITION: dict = {
+    "function": {
+        "name": "control_media",
+        "description": "Управлять воспроизведением: пауза/продолжить, следующий или предыдущий трек.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["play_pause", "next", "previous"],
+                    "description": "Нужное действие управления воспроизведением.",
+                },
+            },
+            "required": ["action"],
         },
     },
     "requires_confirmation": False,

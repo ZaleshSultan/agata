@@ -2,11 +2,12 @@ import json
 import unittest
 from unittest.mock import patch
 
-from action_router import route_calculation, route_datetime, route_explicit_action, route_web_intent
+from action_router import route_calculation, route_datetime, route_explicit_action, route_volume, route_web_intent
 from agent import Agent
 from tools import get_tool_schemas, list_tool_names, system_control
 from tools.calc import calculate
 from tools.datetime_tool import TIMEZONE_NAME, get_current_datetime
+from tools.volume import control_volume
 from tools.web_search import MAX_RESULTS, web_search
 
 
@@ -122,6 +123,52 @@ class ActionRoutingTests(unittest.TestCase):
     def test_current_timezone(self) -> None:
         """Verify timezone constant is Asia/Almaty"""
         self.assertEqual(TIMEZONE_NAME, "Asia/Almaty")
+
+    # ── VOLUME ROUTING ────────────────────────────────────────────────────
+
+    def test_volume_down_word_number(self) -> None:
+        action = route_volume("Уменьшу громкость на тридцать процентов")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_name, "control_volume")
+        self.assertEqual(action.arguments, {"action": "volume_down", "step": "30"})
+
+    def test_volume_down_stt_slip(self) -> None:
+        action = route_volume("Он меньше громкость на тридцать")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.arguments, {"action": "volume_down", "step": "30"})
+
+    def test_volume_after_number_down_is_relative(self) -> None:
+        action = route_volume("громкость на 30 меньше")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.arguments, {"action": "volume_down", "step": "30"})
+
+    def test_volume_bare_set_command(self) -> None:
+        action = route_volume("поставь 30")
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.arguments, {"action": "volume_set", "level": "30"})
+
+    def test_volume_set_string_level_is_accepted(self) -> None:
+        class FakeEndpointVolume:
+            def __init__(self) -> None:
+                self.scalar = 0.5
+
+            def GetMasterVolumeLevelScalar(self) -> float:
+                return self.scalar
+
+            def SetMasterVolumeLevelScalar(self, value: float, event_context) -> None:
+                self.scalar = value
+
+        endpoint = FakeEndpointVolume()
+        with patch("tools.volume._get_endpoint_volume", return_value=endpoint):
+            result = control_volume({"action": "volume_set", "level": "30"})
+        payload = json.loads(result)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["volume"], 30)
+        self.assertEqual(endpoint.scalar, 0.3)
 
     # ── WHISPER PUNCTUATION TOLERANCE ──────────────────────────────────────
 

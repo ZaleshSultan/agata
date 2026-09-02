@@ -1,0 +1,35 @@
+# === Secrets / personal — never commit ===
+config.json
+memory.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Atomic-write temp files (e.g. memory.json.tmp)
+*.tmp
+
+# Node / Electron
+node_modules/
+
+# Logs & runtime output
+*.log
+*.err
+
+# Generated / temporary audio
+*.mp3
+*.wav
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local tooling / editor / notes
+.claude/
+.vscode/
+.idea/
+CLAUDE.md
+ROADMAP.notes.md

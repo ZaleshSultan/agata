@@ -16,6 +16,7 @@ from agent import Agent
 import config
 import stt
 import tts
+from tools.reminder import ensure_reminders_table
 
 # Настройка логирования
 logging.basicConfig(
@@ -37,6 +38,7 @@ def main() -> None:
     print("=" * 60)
     print()
 
+    ensure_reminders_table()
     agent = Agent()
 
     while True:
@@ -79,6 +81,8 @@ def main() -> None:
         except Exception as exc:
             logger.error("Непредвиденная ошибка в главном цикле: %s", exc, exc_info=True)
             print(f"\nПроизошла ошибка: {exc}\n")
+
+    tts.stop()
 
 
 if __name__ == "__main__":

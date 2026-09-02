@@ -5,7 +5,16 @@
 Импортируй этот модуль везде вместо хардкода констант.
 """
 
+import os
 from pathlib import Path
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean setting without making imports depend on dotenv."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 # ── Корневые пути ──────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).resolve().parent
@@ -16,6 +25,40 @@ OLLAMA_URL: str = "http://localhost:11434"
 LLM_MODEL: str = "agata"                       # Qwen3-30B-A3B + Modelfile-характер
 EMBED_MODEL: str = "nomic-embed-text"           # Модель для эмбеддингов
 OLLAMA_KEEP_ALIVE: str = "30m"                  # Время удержания модели в VRAM при простое
+
+# ── Provider selection (extension points; OSINT is intentionally not implemented) ──
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
+VISION_PROVIDER: str = os.getenv("VISION_PROVIDER", "")
+OSINT_PROVIDER: str = os.getenv("OSINT_PROVIDER", "")
+
+# ── Reusable browser / vision infrastructure ─────────────────────────────
+BROWSER_ENABLED: bool = _env_bool("BROWSER_ENABLED", True)
+BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", True)
+BROWSER_TIMEOUT_MS: int = int(os.getenv("BROWSER_TIMEOUT_MS", "15000"))
+BROWSER_MAX_PAGES: int = int(os.getenv("BROWSER_MAX_PAGES", "4"))
+BROWSER_MAX_EXTRACT_CHARS: int = int(os.getenv("BROWSER_MAX_EXTRACT_CHARS", "5000"))
+BROWSER_MAX_LINKS: int = int(os.getenv("BROWSER_MAX_LINKS", "100"))
+VISION_ENABLED: bool = _env_bool("VISION_ENABLED", True)
+
+# ── OSINT engine (public, permissioned sources only) ──────────────────────
+OSINT_ENABLED: bool = _env_bool("OSINT_ENABLED", True)
+OSINT_STORAGE_DIR: Path = Path(os.getenv("OSINT_STORAGE_DIR", str(DATA_DIR / "investigations")))
+OSINT_MAX_RUNTIME_SECONDS: float = float(os.getenv("OSINT_MAX_RUNTIME_SECONDS", "45"))
+OSINT_MAX_REQUESTS: int = int(os.getenv("OSINT_MAX_REQUESTS", "24"))
+OSINT_MAX_ENTITIES: int = int(os.getenv("OSINT_MAX_ENTITIES", "80"))
+OSINT_MAX_PAGES: int = int(os.getenv("OSINT_MAX_PAGES", "8"))
+OSINT_MAX_DEPTH: int = int(os.getenv("OSINT_MAX_DEPTH", "2"))
+OSINT_MAX_PARALLEL_TASKS: int = int(os.getenv("OSINT_MAX_PARALLEL_TASKS", "4"))
+OSINT_REQUEST_TIMEOUT_SECONDS: float = float(os.getenv("OSINT_REQUEST_TIMEOUT_SECONDS", "12"))
+OSINT_AI_PROVIDER: str = os.getenv("OSINT_AI_PROVIDER", "")
+OSINT_AI_MODEL: str = os.getenv("OSINT_AI_MODEL", "")
+OSINT_AI_API_KEY: str = os.getenv("OSINT_AI_API_KEY", "")
+OSINT_AI_BASE_URL: str = os.getenv("OSINT_AI_BASE_URL", "")
+OSINT_AI_FALLBACK_PROVIDER: str = os.getenv("OSINT_AI_FALLBACK_PROVIDER", "")
+OSINT_AI_FALLBACK_MODEL: str = os.getenv("OSINT_AI_FALLBACK_MODEL", "")
+OSINT_AI_FALLBACK_API_KEY: str = os.getenv("OSINT_AI_FALLBACK_API_KEY", "")
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
 # ── Ассистент ──────────────────────────────────────────────────────────────
 ASSISTANT_NAME: str = "Агата"
@@ -66,6 +109,16 @@ WHISPER_COMPUTE_TYPE: str = "float16"           # float16 на GPU, int8 на CP
 # ── TTS ────────────────────────────────────────────────────────────────────
 TTS_RATE: int = 175                             # Скорость речи pyttsx3 (слов/мин)
 TTS_COOLDOWN_SECONDS: float = 0.5               # Пауза безопасности после озвучивания до включения микрофона
+TTS_ENGINE: str = "xtts"                        # Движок TTS: "xtts" | "pyttsx3"
+TTS_ENABLED: bool = True                        # Мастер-переключатель TTS
+TTS_MIN_SENTENCE_CHARS: int = 20                # Мин. символов для отправки предложения в TTS
+TTS_QUEUE_MAX_SIZE: int = 50                    # Макс. предложений в очереди TTS
+TTS_DEVICE: str = "auto"                        # "auto" | "cuda" | "cpu"
+TTS_LANGUAGE: str = "ru"                        # Язык синтеза для XTTS
+TTS_VOICE_PATH: str = str(BASE_DIR / "voices" / "agata_reference.wav")
+TTS_XTTS_MODEL: str = "tts_models/multilingual/multi-dataset/xtts_v2"
+TTS_FALLBACK_ENGINE: str = "pyttsx3"            # Fallback движок при ошибке primary
+TTS_PHRASE_CACHE_ENABLED: bool = True           # RAM-кэширование коротких фраз
 
 # ── Аудиозапись / STT VAD ──────────────────────────────────────────────────
 

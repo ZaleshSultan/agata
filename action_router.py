@@ -333,7 +333,8 @@ def route_media(user_text: str) -> RoutedAction | None:
     cmd = parse_media_command(user_text)
     if cmd is not None:
         logger.info("[ROUTER] transport action=%s query='%s'", cmd.action, user_text)
-        return RoutedAction("MEDIA", "control_media", {"action": cmd.action})
+        action_name = "play_pause" if cmd.action in {"pause", "resume"} else cmd.action
+        return RoutedAction("MEDIA", "control_media", {"action": action_name})
 
     normalized = " ".join(user_text.casefold().split())
     if not normalized:

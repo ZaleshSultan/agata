@@ -5,9 +5,11 @@ __pycache__/
 venv/
 *.egg-info/
 
-# Данные — дневник, напоминания, рабочая память (личное, в репо не нужно)
+# Данные — дневник, напоминания, рабочая память, профили браузера и кэш
 data/*.db
 data/working_memory.md
+data/browser_profile/
+data/tts_cache/
 
 # Модели TTS (тяжёлые бинарники, не для git)
 models/*.onnx

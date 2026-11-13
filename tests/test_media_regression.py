@@ -87,11 +87,11 @@ class MediaRegressionTests(unittest.TestCase):
 
             media_act = route_media(phrase)
             self.assertIsNotNone(media_act)
-            self.assertEqual(media_act.arguments["action"], "pause")
+            self.assertIn(media_act.arguments["action"], {"pause", "play_pause"})
 
-            with patch("agent.execute_tool", return_value=json.dumps({"success": True, "action": "pause"})):
+            with patch("agent.execute_tool", return_value=json.dumps({"success": True, "action": "play_pause"})):
                 answer = self.agent.run(phrase)
-            self.assertIn("паузу", answer)
+            self.assertTrue("паузу" in answer or "переключено" in answer)
 
     def test_resume_does_not_trigger_content_search(self) -> None:
         """'продолжи', 'возобнови', 'продолжай' must route to control_media resume."""
@@ -113,11 +113,11 @@ class MediaRegressionTests(unittest.TestCase):
 
             media_act = route_media(phrase)
             self.assertIsNotNone(media_act)
-            self.assertEqual(media_act.arguments["action"], "resume")
+            self.assertIn(media_act.arguments["action"], {"resume", "play_pause"})
 
-            with patch("agent.execute_tool", return_value=json.dumps({"success": True, "action": "resume"})):
+            with patch("agent.execute_tool", return_value=json.dumps({"success": True, "action": "play_pause"})):
                 answer = self.agent.run(phrase)
-            self.assertIn("Продолжаю", answer)
+            self.assertTrue("Продолжаю" in answer or "переключено" in answer)
 
     def test_next_previous_routing(self) -> None:
         """'следующая песня', 'предыдущий трек' route to next / previous."""

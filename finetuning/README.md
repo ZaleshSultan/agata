@@ -168,3 +168,9 @@ python -m pip check
 Аудит токенизации/LoRA, one-fact и mini-dataset overfit, отдельная проверка характера и команды
 повтора описаны в [DIAGNOSTICS.md](DIAGNOSTICS.md). Реальные результаты сохранены локально в
 [diagnostics_v1/REPORT.md](evaluation/reports/diagnostics_v1/REPORT.md).
+
+## Расширенный набор large_v3
+
+Протокол большего проверенного датасета, трёх эпох, сравнения двух learning rate и выбора
+checkpoint только по validation описан в [LARGE_EXPERIMENT.md](LARGE_EXPERIMENT.md).
+Результаты сохраняются локально в [large_v3/REPORT.md](evaluation/reports/large_v3/REPORT.md).

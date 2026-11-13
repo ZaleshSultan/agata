@@ -174,3 +174,9 @@ python -m pip check
 Протокол большего проверенного датасета, трёх эпох, сравнения двух learning rate и выбора
 checkpoint только по validation описан в [LARGE_EXPERIMENT.md](LARGE_EXPERIMENT.md).
 Результаты сохраняются локально в [large_v3/REPORT.md](evaluation/reports/large_v3/REPORT.md).
+
+## Сравнение ослабленного адаптера
+
+Свежая проверка baseline, исходного checkpoint и `manual_selected_half`, доказательство загрузки
+и правила переноса оценок описаны в [ADAPTER_COMPARISON.md](ADAPTER_COMPARISON.md).
+Реальные ответы и попарные результаты: [half_compare_v1/REPORT.md](evaluation/reports/half_compare_v1/REPORT.md).

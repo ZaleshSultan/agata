@@ -162,3 +162,9 @@ python -m pip check
 запуска описаны в [ABC_EXPERIMENT.md](ABC_EXPERIMENT.md).
 Локальные результаты находятся в `evaluation/reports/abc_v1/`, отдельные адаптеры и графики —
 в `outputs/abc_v1/A`, `outputs/abc_v1/B`, `outputs/abc_v1/C`. Эти приватные артефакты исключены из Git.
+
+## Диагностика неудачного обучения
+
+Аудит токенизации/LoRA, one-fact и mini-dataset overfit, отдельная проверка характера и команды
+повтора описаны в [DIAGNOSTICS.md](DIAGNOSTICS.md). Реальные результаты сохранены локально в
+[diagnostics_v1/REPORT.md](evaluation/reports/diagnostics_v1/REPORT.md).

@@ -39,6 +39,15 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_max_steps(args, config):
+    """CLI overrides YAML; smoke keeps its short default unless CLI overrides it."""
+    if args.max_steps is not None:
+        return args.max_steps
+    if args.smoke:
+        return 5
+    return config["training"].get("max_steps", -1)
+
+
 def run(args, output, report):
     config = read_config(args.config)
     if args.max_seq_length:
@@ -113,7 +122,7 @@ def run(args, output, report):
     if dropped:
         print(f"Excluded {len(dropped)} overlength conversations; details in training report", flush=True)
     train_config = config["training"]
-    max_steps = args.max_steps if args.max_steps is not None else (5 if args.smoke else -1)
+    max_steps = resolve_max_steps(args, config)
     bf16 = torch.cuda.is_bf16_supported()
     kwargs = dict(
         output_dir=str(output), per_device_train_batch_size=train_config["batch_size"],

@@ -25,3 +25,26 @@ temp_output.wav
 
 # Windows
 Thumbs.db
+
+# Fine-tuning: local books, derived private datasets, weights and run artifacts
+finetuning/books/*
+!finetuning/books/.gitkeep
+finetuning/datasets/*
+!finetuning/datasets/.gitkeep
+finetuning/outputs/*
+!finetuning/outputs/.gitkeep
+finetuning/logs/*
+!finetuning/logs/.gitkeep
+finetuning/evaluation/reports/
+finetuning/evaluation/*.jsonl
+finetuning/evaluation/*private*
+finetuning/STATUS.md
+finetuning/.cache/
+finetuning/.env*
+finetuning/**/unsloth_compiled_cache/
+unsloth_compiled_cache/
+# Preserve prior experiment locally; never accidentally publish its book or data.
+agata_finetune_knowledge_v2/books/
+agata_finetune_knowledge_v2/dataset/
+agata_finetune_knowledge_v2/outputs/
+agata_finetune_knowledge_v2/logs/

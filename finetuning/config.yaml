@@ -1,0 +1,27 @@
+model:
+  name: unsloth/Qwen3-1.7B-bnb-4bit
+  revision: d1d7781199f38692496fab70012c39598f0c858f
+  max_seq_length: 1024
+  load_in_4bit: true
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+training:
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0002
+  epochs: 2
+  optimizer: adamw_8bit
+  seed: 3407
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  save_steps: 25
+data:
+  train: datasets/train.jsonl
+  validation: datasets/validation.jsonl
+  smoke: datasets/smoke.jsonl
+evaluation:
+  benchmark: evaluation/benchmark.jsonl
+  max_new_tokens: 128

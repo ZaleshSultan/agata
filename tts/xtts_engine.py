@@ -106,8 +106,17 @@ def _validate_reference_audio(path: str) -> tuple[bool, str]:
         return False, f"Ошибка валидации: {exc}"
 
 
+import hashlib
+
 # In-memory WAV cache for short static and confirmation phrases
 _PHRASE_CACHE: dict[str, bytes] = {}
+_DISK_CACHE_DIR = config.DATA_DIR / "tts_cache"
+
+
+def _get_cache_path(cache_key: str) -> Path:
+    _DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    h = hashlib.md5(cache_key.encode("utf-8")).hexdigest()
+    return _DISK_CACHE_DIR / f"{h}.wav"
 
 
 def get_phrase_cache_size() -> int:
@@ -123,12 +132,9 @@ def clear_phrase_cache() -> None:
 class XTTSEngine(BaseTTSEngine):
     """XTTS-v2 движок с zero-shot voice cloning.
 
-    Модель загружается лениво при первом вызове synthesize_and_play().
+    Модель загружается ОДИН РАЗ при старте runtime и живёт всё время процесса.
     Speaker conditioning кэшируется для всех последующих запросов.
-    Короткие повторяющиеся фразы (подтверждения) кэшируются в памяти.
-
-    ВАЖНО: Голос клонируется по reference audio. Используйте
-    voice cloning только с разрешения правообладателя/носителя голоса.
+    Короткие повторяющиеся фразы (подтверждения) кэшируются на диске и в RAM.
     """
 
     def __init__(self) -> None:
@@ -142,8 +148,23 @@ class XTTSEngine(BaseTTSEngine):
         # Принять лицензию Coqui CPML автоматически
         os.environ["COQUI_TOS_AGREED"] = "1"
 
+    @property
+    def model_ready(self) -> bool:
+        return self._model_loaded and self._tts is not None
+
+    def warmup(self) -> bool:
+        """Pre-load model once on runtime startup to prevent first-command lag."""
+        if self._model_loaded:
+            return True
+        try:
+            self._load_model()
+            return True
+        except Exception as exc:
+            logger.warning("[TTS] Warmup failed: %s", exc)
+            return False
+
     def _load_model(self) -> None:
-        """Загрузить XTTS-v2 модель (один раз)."""
+        """Загрузить XTTS-v2 модель (один раз за жизненный цикл процесса)."""
         if self._model_loaded:
             return
 
@@ -176,7 +197,7 @@ class XTTSEngine(BaseTTSEngine):
         # Загружаем модель
         try:
             model_name = config.TTS_XTTS_MODEL
-            logger.info("[TTS] Загрузка модели %s ...", model_name)
+            logger.info("[TTS] Загрузка модели %s (single-initialization) ...", model_name)
             self._tts = TTS(model_name=model_name).to(self._device)
             self._model_loaded = True
             load_elapsed = time.perf_counter() - load_start
@@ -189,40 +210,49 @@ class XTTSEngine(BaseTTSEngine):
     def synthesize_and_play(self, text: str) -> None:
         """Синтезировать текст с клонированным голосом и воспроизвести.
 
-        Текст синтезируется во временный WAV, затем воспроизводится
-        через sounddevice. Временный файл удаляется после воспроизведения.
+        Проверяет двухуровневый кэш (RAM + Disk). При попадании воспроизводит без инференса.
         """
         request_start = time.perf_counter()
         cache_key = " ".join(text.strip().casefold().split()).strip(" .,!?:;\"'")
 
-        # ── 1. Check in-memory phrase cache (instant zero-inference playback) ──
-        if getattr(config, "TTS_PHRASE_CACHE_ENABLED", True) and cache_key in _PHRASE_CACHE:
-            cached_wav_bytes = _PHRASE_CACHE[cache_key]
-            logger.info("[TTS CACHE] HIT for phrase '%s' (%d bytes) — skipping inference", text, len(cached_wav_bytes))
-            self._play_wav_bytes(cached_wav_bytes)
-            total_elapsed = time.perf_counter() - request_start
-            logger.info("[TTS] cache_play_time=%.3fs for '%s'", total_elapsed, text)
-            return
+        # ── 1. Check RAM cache ──
+        if getattr(config, "TTS_PHRASE_CACHE_ENABLED", True):
+            if cache_key in _PHRASE_CACHE:
+                cached_wav_bytes = _PHRASE_CACHE[cache_key]
+                logger.info("[TTS CACHE] RAM HIT for '%s' (%d bytes) — skipping inference", text, len(cached_wav_bytes))
+                self._play_wav_bytes(cached_wav_bytes)
+                total_elapsed = time.perf_counter() - request_start
+                logger.info("[TTS] cache_play_time=%.3fs for '%s'", total_elapsed, text)
+                return
 
-        # Ленивая загрузка модели
+            # ── 2. Check Disk cache ──
+            disk_path = _get_cache_path(cache_key)
+            if disk_path.exists():
+                try:
+                    wav_data = disk_path.read_bytes()
+                    _PHRASE_CACHE[cache_key] = wav_data
+                    logger.info("[TTS CACHE] DISK HIT for '%s' (%d bytes) — skipping inference", text, len(wav_data))
+                    self._play_wav_bytes(wav_data)
+                    total_elapsed = time.perf_counter() - request_start
+                    logger.info("[TTS] disk_cache_play_time=%.3fs for '%s'", total_elapsed, text)
+                    return
+                except Exception as d_exc:
+                    logger.debug("[TTS CACHE] disk read error: %s", d_exc)
+
+        # ── 3. Model Inference ──
         self._load_model()
 
         assert self._tts is not None
         assert self._speaker_wav is not None
 
-        # XTTS-v2 имеет ограничение ~250 символов. Длинный текст
-        # нарезается SentenceChunker ещё до попадания сюда,
-        # но на всякий случай обрезаем если что.
         if len(text) > 250:
             logger.warning("[TTS] Текст обрезан до 250 символов (XTTS limit)")
             text = text[:247] + "..."
 
-        # Создаём временный файл для аудио
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="agata_tts_")
         os.close(tmp_fd)
 
         try:
-            # Синтез
             synthesis_start = time.perf_counter()
             self._tts.tts_to_file(
                 text=text,
@@ -233,17 +263,18 @@ class XTTSEngine(BaseTTSEngine):
             synthesis_elapsed = time.perf_counter() - synthesis_start
             logger.info("[TTS] synthesis_time=%.3fs", synthesis_elapsed)
 
-            # Store in phrase cache if short phrase
-            if getattr(config, "TTS_PHRASE_CACHE_ENABLED", True) and len(text) <= 50:
+            # Store in disk + RAM phrase cache if short confirmation phrase
+            if getattr(config, "TTS_PHRASE_CACHE_ENABLED", True) and len(text) <= 60:
                 try:
                     with open(tmp_path, "rb") as f:
                         wav_data = f.read()
                     _PHRASE_CACHE[cache_key] = wav_data
-                    logger.info("[TTS CACHE] Saved '%s' to phrase cache (total=%d)", text, len(_PHRASE_CACHE))
+                    disk_path = _get_cache_path(cache_key)
+                    disk_path.write_bytes(wav_data)
+                    logger.info("[TTS CACHE] Saved '%s' to RAM & Disk cache (%s)", text, disk_path)
                 except Exception as c_exc:
                     logger.debug("[TTS CACHE] Could not cache phrase: %s", c_exc)
 
-            # Воспроизведение
             playback_start = time.perf_counter()
             self._play_audio(tmp_path)
             playback_elapsed = time.perf_counter() - playback_start
@@ -253,11 +284,11 @@ class XTTSEngine(BaseTTSEngine):
             logger.info("[TTS] total_time=%.3fs", total_elapsed)
 
         finally:
-            # Удаляем временный файл
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
 
     @staticmethod
     def _play_wav_bytes(wav_bytes: bytes) -> None:

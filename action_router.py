@@ -326,10 +326,15 @@ def route_volume(user_text: str) -> RoutedAction | None:
 def route_media(user_text: str) -> RoutedAction | None:
     """Route unambiguous media transport commands before the LLM.
 
-    Bare words such as ``play`` are intentionally excluded: they are common in
-    ordinary conversation (for example, "play a game") and must not trigger a
-    global media key.
+    Uses dedicated deterministic transport parser to guarantee stop/pause/resume/next/previous
+    never trigger content search or invoke an LLM.
     """
+    from media.transport_parser import parse_media_command
+    cmd = parse_media_command(user_text)
+    if cmd is not None:
+        logger.info("[ROUTER] transport action=%s query='%s'", cmd.action, user_text)
+        return RoutedAction("MEDIA", "control_media", {"action": cmd.action})
+
     normalized = " ".join(user_text.casefold().split())
     if not normalized:
         return None
@@ -399,9 +404,14 @@ _CONTENT_PLAY_VERB = re.compile(
 # Exclusions: phrases that look like content play but aren't
 _CONTENT_PLAY_EXCLUSIONS = re.compile(
     r"\b(?:"
-    r"на паузу"
+    r"на\s+паузу"
+    r"|на\s+стоп"
+    r"|пауз\w*"
+    r"|стоп"
+    r"|останови\w*"
+    r"|приостанови\w*"
     r"|дневник"
-    r"|запись в"
+    r"|запись\s+в"
     r"|запись$"
     r"|таймер"
     r"|будильник"
@@ -411,6 +421,7 @@ _CONTENT_PLAY_EXCLUSIONS = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
 
 # Bare media objects — if the ENTIRE object after the verb is just one of these,
 # it's media transport, not content play. "включи музыку" → media, but

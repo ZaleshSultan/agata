@@ -64,14 +64,11 @@ def main() -> None:
             agent_elapsed = perf_counter() - request_started_at
             print(f"\n{config.ASSISTANT_NAME}: {answer}\n")
 
-            # Озвучивание через TTS
-            tts_started_at = perf_counter()
-            tts.speak(answer)
-            tts_elapsed = perf_counter() - tts_started_at
+            # Озвучивание через TTS (асинхронно, не блокирует цикл действий)
+            tts.enqueue(answer)
             logger.info(
-                "[PERF] agent=%0.3fs tts=%0.3fs total=%0.3fs",
-                agent_elapsed,
-                tts_elapsed,
+                "[PERF] action_latency_ms=%.1fms total=%.3fs (tts enqueued asynchronously)",
+                agent_elapsed * 1000.0,
                 perf_counter() - request_started_at,
             )
 

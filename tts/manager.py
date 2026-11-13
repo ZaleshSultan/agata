@@ -109,7 +109,11 @@ class TTSManager:
         self._lock = threading.Lock()
         self._is_speaking: bool = False
         self._last_finish_time: float = 0.0
-        self._started: bool = False
+        self._model_ready: bool = False
+
+    @property
+    def model_ready(self) -> bool:
+        return self._model_ready
 
     def start(self) -> None:
         """Запустить фоновый воркер-поток."""
@@ -143,7 +147,7 @@ class TTSManager:
         logger.info("[TTS] Worker остановлен")
 
     def enqueue(self, text: str) -> None:
-        """Добавить предложение в очередь на озвучивание."""
+        """Добавить предложение в очередь на озвучивание (асинхронно, не блокирует вызов)."""
         if not config.TTS_ENABLED:
             return
         if not text or not text.strip():
@@ -158,7 +162,9 @@ class TTSManager:
             self.start()
 
         try:
-            self._queue.put(clean_text, timeout=5.0)
+            # Store tuple of (text, enqueue_timestamp)
+            item = (clean_text, time.perf_counter())
+            self._queue.put(item, timeout=5.0)
             logger.info(
                 "[TTS QUEUE] enqueued (%d in queue): '%s'",
                 self._queue.qsize(),
@@ -168,18 +174,13 @@ class TTSManager:
             logger.warning("[TTS QUEUE] Очередь переполнена, пропускаю: '%s'", clean_text[:60])
 
     def speak(self, text: str) -> None:
-        """Совместимость: поставить текст в очередь и дождаться окончания.
-
-        Для вызова из main.py, когда нужен синхронный режим
-        (например, для коротких фраз от action router).
-        """
+        """Совместимость: поставить текст в очередь и дождаться окончания."""
         if not config.TTS_ENABLED:
             return
         if not text or not text.strip():
             logger.warning("Пустой текст для TTS — пропускаю")
             return
 
-        # Очистка markdown для прямого вызова speak()
         clean_text = _clean_for_speech(text)
         if not clean_text:
             return
@@ -198,7 +199,7 @@ class TTSManager:
             return
 
         logger.info("[TTS CONFIRM] Fast confirmation speech: '%s'", clean_text)
-        self.speak(clean_text)
+        self.enqueue(clean_text)
 
     def is_speaking(self) -> bool:
         """Проверить, воспроизводит ли TTS текст в данный момент."""
@@ -212,7 +213,6 @@ class TTSManager:
 
     def wait_until_done(self) -> None:
         """Блокировать до тех пор, пока очередь не опустеет и речь не закончится."""
-        # Ждём, пока очередь опустеет и текущая фраза доиграет
         while True:
             with self._lock:
                 if not self._is_speaking and self._queue.empty():
@@ -222,26 +222,49 @@ class TTSManager:
     def _worker_loop(self) -> None:
         """Фоновый цикл воркера — берёт предложения из очереди и озвучивает."""
         logger.info("[TTS] Worker loop started")
+
+        # Pre-warm model once on startup
+        try:
+            target_engine = getattr(self._engine, "_primary", self._engine)
+            if hasattr(target_engine, "warmup"):
+                target_engine.warmup()
+            self._model_ready = True
+            logger.info("[TTS] Model pre-warmed, model_ready=True")
+        except Exception as w_exc:
+            logger.debug("[TTS] Pre-warm note: %s", w_exc)
+            self._model_ready = True
+
         while True:
             try:
-                text = self._queue.get(timeout=1.0)
+                item = self._queue.get(timeout=1.0)
             except Empty:
                 continue
 
             # Poison pill — завершаем
-            if text is None:
+            if item is None or item is _POISON_PILL:
                 self._queue.task_done()
                 break
+
+            if isinstance(item, tuple):
+                text, enqueued_at = item
+            else:
+                text, enqueued_at = item, time.perf_counter()
 
             with self._lock:
                 self._is_speaking = True
 
+            queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
             try:
                 request_start = time.perf_counter()
                 logger.info("[TTS] speaking: '%s'", text[:80])
                 self._engine.synthesize_and_play(text)
-                total_time = time.perf_counter() - request_start
-                logger.info("[TTS] finished: '%s' (%.3fs)", text[:80], total_time)
+                synth_play_ms = (time.perf_counter() - request_start) * 1000.0
+                logger.info(
+                    "[PERF] tts_queue_latency_ms=%.1fms tts_playback_latency_ms=%.1fms phrase='%s'",
+                    queue_wait_ms,
+                    synth_play_ms,
+                    text[:50],
+                )
             except Exception as exc:
                 logger.error("[TTS] Ошибка синтеза: %s", exc)
                 print(f"[TTS ошибка: {exc}]")
@@ -252,6 +275,7 @@ class TTSManager:
                 self._queue.task_done()
 
         logger.info("[TTS] Worker loop ended")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

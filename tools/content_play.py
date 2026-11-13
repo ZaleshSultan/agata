@@ -1,13 +1,16 @@
-"""Tool for searching and playing media content (YouTube, SoundCloud)."""
+"""Tool for searching and playing media content (YouTube, SoundCloud) with parsing and ranking."""
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Any
 
 from media.base import ActionResult, MediaResult
+from media.parser import parse_content_query
+from media.reranker import get_ai_reranker
 from media.soundcloud import SoundCloudProvider
 from media.youtube import YouTubeProvider
 
@@ -41,6 +44,16 @@ TOOL_DEFINITION = {
 async def _async_play_content(query: str, platform: str = "youtube") -> ActionResult:
     platform_key = platform.lower().strip() if platform else "youtube"
 
+    # 1. Parse content query deterministically (extract title, artist, content type)
+    parsed = parse_content_query(query)
+    logger.info(
+        "[CONTENT] Parsed query: title='%s', artist='%s', type='%s', search_query='%s'",
+        parsed.title,
+        parsed.artist,
+        parsed.content_type,
+        parsed.search_query,
+    )
+
     if platform_key in {"soundcloud", "саундклауд"}:
         provider = SoundCloudProvider()
         canonical_platform = "soundcloud"
@@ -48,9 +61,14 @@ async def _async_play_content(query: str, platform: str = "youtube") -> ActionRe
         provider = YouTubeProvider()
         canonical_platform = "youtube"
 
-    logger.info("[CONTENT] Searching '%s' on %s", query, canonical_platform)
+    logger.info("[CONTENT] Searching '%s' on %s", parsed.search_query, canonical_platform)
     try:
-        results = await provider.search(query)
+        results = await provider.search(
+            query=parsed.search_query,
+            content_type=parsed.content_type,
+            query_title=parsed.title,
+            query_artist=parsed.artist,
+        )
         if not results:
             return ActionResult(
                 success=False,
@@ -60,10 +78,23 @@ async def _async_play_content(query: str, platform: str = "youtube") -> ActionRe
                 reason=f"Ничего не найдено по запросу '{query}' на {canonical_platform}.",
             )
 
-        top_result = results[0]
-        logger.info("[CONTENT] Top ranked: '%s' (%s, score=%s)", top_result.title, top_result.url, top_result.score)
+        # 2. Optional AI reranking (top 5), falls back to deterministic order
+        reranker = get_ai_reranker()
+        reranked = await reranker.rerank(parsed.search_query, results)
+        top_result = reranked[0]
+
+        logger.info(
+            "[CONTENT] Selected result: '%s' (%s, score=%s, channel='%s')",
+            top_result.title,
+            top_result.url,
+            top_result.score,
+            top_result.channel,
+        )
+
+        # 3. Real playback & verification via persistent MediaSession
         action_result = await provider.play(top_result)
         return action_result
+
     except Exception as exc:
         logger.error("[CONTENT] Playback execution failed: %s", exc)
         return ActionResult(
@@ -89,7 +120,6 @@ def play_content(query: str, platform: str = "youtube") -> str:
 
         if loop and loop.is_running():
             # If called inside an existing running event loop
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 action_result = pool.submit(asyncio.run, _async_play_content(query, platform)).result()
         else:

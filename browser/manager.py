@@ -25,6 +25,8 @@ class BrowserManager:
         # A list preserves creation order so the page cap closes the oldest
         # page deterministically rather than an arbitrary set member.
         self._pages: list[Any] = []
+        self._media_page: Any | None = None
+        self._general_page: Any | None = None
         self._lock: asyncio.Lock | None = None
 
     async def start(self) -> None:
@@ -42,16 +44,42 @@ class BrowserManager:
                 from playwright.async_api import async_playwright
 
                 self._playwright = await async_playwright().start()
-                self._browser = await self._playwright.chromium.launch(headless=config.BROWSER_HEADLESS)
-                self._context = await self._browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+                profile_path = config.DATA_DIR / "browser_profile"
+                profile_path.mkdir(parents=True, exist_ok=True)
+
+                chromium_args = [
+                    "--autoplay-policy=no-user-gesture-required",
+                    "--disable-blink-features=AutomationControlled",
+                ]
+
+                try:
+                    self._context = await self._playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(profile_path),
+                        headless=config.BROWSER_HEADLESS,
+                        args=chromium_args,
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+                        ),
                     )
-                )
+                    self._browser = getattr(self._context, "browser", None)
+                    logger.info("[BROWSER] persistent Chromium context started at %s (headless=%s)", profile_path, config.BROWSER_HEADLESS)
+                except Exception as p_exc:
+                    logger.warning("[BROWSER] persistent context fallback: %s", p_exc)
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=config.BROWSER_HEADLESS,
+                        args=chromium_args,
+                    )
+                    self._context = await self._browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+                        )
+                    )
+                    logger.info("[BROWSER] standard Chromium context started (headless=%s)", config.BROWSER_HEADLESS)
+
                 self._context.set_default_timeout(config.BROWSER_TIMEOUT_MS)
                 self._context.set_default_navigation_timeout(config.BROWSER_TIMEOUT_MS)
-                logger.info("[BROWSER] shared Chromium context started (headless=%s)", config.BROWSER_HEADLESS)
             except ImportError as exc:
                 await self.close()
                 raise BrowserUnavailableError("Playwright is not installed. Run: pip install -r requirements.txt") from exc
@@ -59,13 +87,58 @@ class BrowserManager:
                 await self.close()
                 raise BrowserUnavailableError(f"Browser failed to start: {exc}") from exc
 
+    async def get_media_page(self) -> Any:
+        """Return the dedicated persistent page for media playback (YouTube/SoundCloud)."""
+        await self.start()
+        assert self._context is not None
+        if self._media_page is not None and not self._media_page.is_closed():
+            return self._media_page
+
+        # Reuse existing page in context if already on youtube/soundcloud
+        for p in self._context.pages:
+            if not p.is_closed():
+                url = p.url or ""
+                if "youtube.com" in url or "soundcloud.com" in url:
+                    self._media_page = p
+                    return self._media_page
+
+        try:
+            self._media_page = await self._context.new_page()
+        except Exception as exc:
+            raise BrowserUnavailableError(f"Unable to create media page: {exc}") from exc
+
+        def on_media_close() -> None:
+            self._media_page = None
+
+        self._media_page.on("close", on_media_close)
+        return self._media_page
+
+    async def get_general_page(self) -> Any:
+        """Return the dedicated persistent page for general web browsing."""
+        await self.start()
+        assert self._context is not None
+        if self._general_page is not None and not self._general_page.is_closed():
+            return self._general_page
+
+        try:
+            self._general_page = await self._context.new_page()
+        except Exception as exc:
+            raise BrowserUnavailableError(f"Unable to create general page: {exc}") from exc
+
+        def on_gen_close() -> None:
+            self._general_page = None
+
+        self._general_page.on("close", on_gen_close)
+        return self._general_page
+
     async def get_page(self) -> Any:
         """Return a tracked page, closing the oldest pages before exceeding the cap."""
         await self.start()
         assert self._context is not None
         while len(self._pages) >= max(1, config.BROWSER_MAX_PAGES):
             oldest = self._pages.pop(0)
-            await oldest.close()
+            if oldest != self._media_page:  # Never auto-evict the active media page
+                await oldest.close()
         try:
             page = await self._context.new_page()
         except Exception as exc:
@@ -87,21 +160,47 @@ class BrowserManager:
                 await page.close()
             except Exception:
                 pass
+        if self._media_page is not None and not self._media_page.is_closed():
+            try:
+                await self._media_page.close()
+            except Exception:
+                pass
+        self._media_page = None
+
+        if self._general_page is not None and not self._general_page.is_closed():
+            try:
+                await self._general_page.close()
+            except Exception:
+                pass
+        self._general_page = None
+
         browser, self._browser = self._browser, None
         context, self._context = self._context, None
+        if context is not None:
+            try:
+                await context.close()
+            except Exception as exc:
+                logger.debug("[BROWSER] context close failed: %s", exc)
         if browser is not None:
             try:
                 await browser.close()
             except Exception as exc:
                 logger.debug("[BROWSER] browser close failed: %s", exc)
-        elif context is not None:
-            try:
-                await context.close()
-            except Exception:
-                pass
         playwright, self._playwright = self._playwright, None
         if playwright is not None:
             try:
                 await playwright.stop()
             except Exception as exc:
                 logger.debug("[BROWSER] Playwright stop failed: %s", exc)
+
+
+_shared_browser_manager: BrowserManager | None = None
+
+
+def get_browser_manager() -> BrowserManager:
+    """Return the application-level shared BrowserManager instance."""
+    global _shared_browser_manager
+    if _shared_browser_manager is None:
+        _shared_browser_manager = BrowserManager()
+    return _shared_browser_manager
+

@@ -215,10 +215,15 @@ class Agent:
         if action.tool_name == "control_media":
             labels = {
                 "play_pause": "Воспроизведение переключено.",
+                "pause": "Поставила на паузу.",
+                "stop": "Остановила воспроизведение.",
+                "resume": "Продолжаю воспроизведение.",
+                "play": "Продолжаю воспроизведение.",
                 "next": "Переключила на следующий трек.",
                 "previous": "Переключила на предыдущий трек.",
             }
-            return self._remember_turn(user_text, labels.get(action.arguments["action"], "Готово.")), tool_elapsed
+            act_key = action.arguments.get("action", "play_pause")
+            return self._remember_turn(user_text, labels.get(act_key, "Готово.")), tool_elapsed
         if action.tool_name == "play_content":
             if payload and payload.get("success"):
                 title = payload.get("title") or action.arguments.get("query", "контент")
@@ -316,7 +321,16 @@ class Agent:
             logger.warning("[MEMORY] context preparation failed: %s", exc)
             memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
 
-        # 1. CLOSE / OPEN / SYSTEM ACTION
+        # 1. MEDIA TRANSPORT (Highest priority — stop, pause, resume, next, prev)
+        media_action = route_media(user_text)
+        if media_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", media_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, media_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 2. CLOSE / OPEN / SYSTEM ACTION
         action = route_explicit_action(user_text)
         if action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -324,21 +338,12 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 2. VOLUME
+        # 3. VOLUME
         volume_action = route_volume(user_text)
         if volume_action is not None:
             router_elapsed = perf_counter() - router_started_at
             logger.info("Fast router: %s", volume_action.kind)
             answer, tool_elapsed = self._run_routed_action(user_text, volume_action)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 3. MEDIA TRANSPORT
-        media_action = route_media(user_text)
-        if media_action is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", media_action.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, media_action)
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
@@ -351,25 +356,7 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 5. CALCULATION
-        calculation = route_calculation(user_text)
-        if calculation is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", calculation.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 6. DATETIME
-        datetime_action = route_datetime(user_text)
-        if datetime_action is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", datetime_action.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 7. WEB SEARCH (incl. weather)
+        # 5. WEB SEARCH (incl. weather)
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -382,6 +369,24 @@ class Agent:
                 final_llm=synthesis_elapsed,
                 response=0.0,
             )
+            return answer
+
+        # 6. CALCULATION
+        calculation = route_calculation(user_text)
+        if calculation is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", calculation.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 7. DATETIME
+        datetime_action = route_datetime(user_text)
+        if datetime_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", datetime_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
         router_elapsed = perf_counter() - router_started_at

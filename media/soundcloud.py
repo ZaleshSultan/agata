@@ -1,28 +1,34 @@
-"""SoundCloud provider for search and playback verification."""
+"""SoundCloud provider for search and verified DOM playback."""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from urllib.parse import quote_plus
 from typing import Any
 
-from browser.manager import BrowserManager
+from browser.manager import BrowserManager, get_browser_manager
 from media.base import ActionResult, MediaProvider, MediaResult
 from media.ranking import rank_media_results
+from media.session import get_media_session
 
 logger = logging.getLogger(__name__)
 
 
 class SoundCloudProvider(MediaProvider):
-    """Searches SoundCloud and opens the top-ranked track with playback verification."""
+    """Searches SoundCloud and plays tracks inside persistent MediaSession."""
 
     def __init__(self, browser_manager: BrowserManager | None = None) -> None:
-        self._browser = browser_manager or BrowserManager()
+        self._browser = browser_manager or get_browser_manager()
+        self._session = get_media_session()
 
-    async def search(self, query: str) -> list[MediaResult]:
-        """Search SoundCloud and extract track links and titles."""
+    async def search(
+        self,
+        query: str,
+        content_type: str = "music",
+        query_title: str = "",
+        query_artist: str = "",
+    ) -> list[MediaResult]:
+        """Search SoundCloud and extract track links, titles, and artists."""
         clean_q = query.strip()
         if not clean_q:
             return []
@@ -51,9 +57,15 @@ class SoundCloudProvider(MediaProvider):
                         const title = el.innerText?.trim();
                         if (href && !href.startsWith('/search') && !href.startsWith('/pages') && title && !seen.has(href)) {
                             seen.add(href);
+                            // Look for artist name
+                            const parent = el.closest('.soundTitle__titleContainer, .searchList__item');
+                            const userEl = parent ? parent.querySelector('.soundTitle__username, .sound__header .soundTitle__usernameText') : null;
+                            const channel = userEl ? userEl.innerText.trim() : '';
+
                             items.push({
                                 href: href.startsWith('http') ? href : 'https://soundcloud.com' + href,
                                 title: title,
+                                channel: channel,
                             });
                         }
                         if (items.length >= 10) break;
@@ -67,7 +79,9 @@ class SoundCloudProvider(MediaProvider):
                     MediaResult(
                         url=it["href"],
                         title=it["title"],
+                        channel=it.get("channel", ""),
                         position=i,
+                        content_type="music",
                     )
                 )
 
@@ -87,39 +101,61 @@ class SoundCloudProvider(MediaProvider):
                     url=search_url,
                     title=f"Поиск SoundCloud: {clean_q}",
                     position=0,
+                    content_type="music",
                 )
             ]
 
-        return rank_media_results(clean_q, results)
+        return rank_media_results(
+            query=clean_q,
+            items=results,
+            content_type="music",
+            query_title=query_title,
+            query_artist=query_artist,
+        )
 
     async def play(self, result: MediaResult) -> ActionResult:
-        """Open the SoundCloud track URL in system browser."""
-        logger.info("[SOUNDCLOUD] Playing: '%s' (%s)", result.title, result.url)
+        """Execute playback of the SoundCloud track inside persistent MediaSession and verify."""
+        logger.info("[SOUNDCLOUD] Playing in MediaSession: '%s' (%s)", result.title, result.url)
 
-        from tools.system_control import open_browser as sys_open_browser
+        status = await self._session.play(url=result.url, title=result.title, platform="soundcloud")
 
-        browser_res_str = sys_open_browser(result.url)
-        try:
-            payload = json.loads(browser_res_str)
-            if not payload.get("success"):
-                return ActionResult(
-                    success=False,
-                    action="play_content",
-                    platform="soundcloud",
-                    query=result.title,
-                    url=result.url,
-                    stage="open_browser",
-                    reason=payload.get("error", "Failed to open browser"),
-                )
-        except Exception:
-            pass
+        if status.verification in {"verified", "playback_verified_audio_unknown"}:
+            return ActionResult(
+                success=True,
+                action="play_content",
+                platform="soundcloud",
+                query=result.title,
+                url=result.url,
+                title=result.title,
+                stage="playback",
+                verification=status.verification,
+                playback_status=status,
+                extra={"verification": status.verification},
+            )
+
+        if status.verification == "started":
+            return ActionResult(
+                success=True,
+                action="play_content",
+                platform="soundcloud",
+                query=result.title,
+                url=result.url,
+                title=result.title,
+                stage="started",
+                verification="not_available",
+                playback_status=status,
+                extra={"verification": "not_available"},
+            )
 
         return ActionResult(
-            success=True,
+            success=False,
             action="play_content",
             platform="soundcloud",
             query=result.title,
             url=result.url,
             title=result.title,
-            stage="playback",
+            stage="failed",
+            reason=status.error or "SoundCloud playback verification failed",
+            verification="failed",
+            playback_status=status,
         )

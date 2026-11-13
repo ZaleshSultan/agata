@@ -1,33 +1,40 @@
-"""YouTube provider for search and playback verification."""
+"""YouTube provider for rich search and verified DOM playback."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import quote_plus
 from typing import Any
 
-from browser.manager import BrowserManager
+from browser.manager import BrowserManager, get_browser_manager
 from media.base import ActionResult, MediaProvider, MediaResult
 from media.ranking import rank_media_results
+from media.session import get_media_session
 
 logger = logging.getLogger(__name__)
 
 
 class YouTubeProvider(MediaProvider):
-    """Searches YouTube and opens the top-ranked video with playback verification."""
+    """Searches YouTube with rich metadata extraction and plays via persistent MediaSession."""
 
     def __init__(self, browser_manager: BrowserManager | None = None) -> None:
-        self._browser = browser_manager or BrowserManager()
+        self._browser = browser_manager or get_browser_manager()
+        self._session = get_media_session()
 
-    async def search(self, query: str) -> list[MediaResult]:
-        """Search YouTube and extract video links and titles."""
+    async def search(
+        self,
+        query: str,
+        content_type: str = "general",
+        query_title: str = "",
+        query_artist: str = "",
+    ) -> list[MediaResult]:
+        """Search YouTube and extract video titles, channels, duration, and descriptions."""
         clean_q = query.strip()
         if not clean_q:
             return []
 
         search_url = f"https://www.youtube.com/results?search_query={quote_plus(clean_q)}"
-        logger.info("[YOUTUBE] Searching: '%s' -> %s", clean_q, search_url)
+        logger.info("[YOUTUBE] Searching: '%s' (type=%s) -> %s", clean_q, content_type, search_url)
 
         page: Any = None
         results: list[MediaResult] = []
@@ -41,23 +48,66 @@ class YouTubeProvider(MediaProvider):
             except Exception:
                 pass
 
-            # Extract video titles and hrefs
+            # Extract rich video metadata
             raw_items = await page.evaluate(
                 """() => {
                     const items = [];
                     const seen = new Set();
-                    const titleElements = document.querySelectorAll('a#video-title');
-                    for (const el of titleElements) {
-                        const href = el.getAttribute('href');
-                        const title = el.getAttribute('title') || el.innerText?.trim();
-                        if (href && href.includes('/watch?v=') && title && !seen.has(href)) {
+                    const renderers = document.querySelectorAll('ytd-video-renderer');
+
+                    if (renderers.length > 0) {
+                        for (const r of renderers) {
+                            const titleEl = r.querySelector('a#video-title');
+                            if (!titleEl) continue;
+                            const href = titleEl.getAttribute('href');
+                            const title = titleEl.getAttribute('title') || titleEl.innerText?.trim();
+                            if (!href || !href.includes('/watch?v=') || !title || seen.has(href)) continue;
                             seen.add(href);
+
+                            const channelEl = r.querySelector('#channel-info #channel-name, #channel-name a, ytd-channel-name');
+                            const channel = channelEl ? channelEl.innerText.trim() : '';
+
+                            const verified = Boolean(
+                                r.querySelector('.badge-style-type-verified, [aria-label*="Подтверждено"], [aria-label*="Verified"]')
+                            );
+
+                            const durEl = r.querySelector('span#text.ytd-thumbnail-overlay-time-status-renderer, #time-status');
+                            const duration = durEl ? durEl.innerText.trim() : '';
+
+                            const descEl = r.querySelector('#description-text, .metadata-snippet-text');
+                            const desc = descEl ? descEl.innerText.trim() : '';
+
                             items.push({
                                 href: href.startsWith('http') ? href : 'https://www.youtube.com' + href,
                                 title: title.trim(),
+                                channel: channel,
+                                verified: verified,
+                                duration: duration,
+                                description: desc,
                             });
+                            if (items.length >= 10) break;
                         }
-                        if (items.length >= 10) break;
+                    }
+
+                    // Fallback to basic video title tags if ytd-video-renderer is not present
+                    if (items.length === 0) {
+                        const titleElements = document.querySelectorAll('a#video-title');
+                        for (const el of titleElements) {
+                            const href = el.getAttribute('href');
+                            const title = el.getAttribute('title') || el.innerText?.trim();
+                            if (href && href.includes('/watch?v=') && title && !seen.has(href)) {
+                                seen.add(href);
+                                items.push({
+                                    href: href.startsWith('http') ? href : 'https://www.youtube.com' + href,
+                                    title: title.trim(),
+                                    channel: '',
+                                    verified: false,
+                                    duration: '',
+                                    description: '',
+                                });
+                            }
+                            if (items.length >= 10) break;
+                        }
                     }
                     return items;
                 }"""
@@ -68,7 +118,12 @@ class YouTubeProvider(MediaProvider):
                     MediaResult(
                         url=it["href"],
                         title=it["title"],
+                        channel=it.get("channel", ""),
+                        verified_channel=it.get("verified", False),
+                        duration=it.get("duration", ""),
+                        description=it.get("description", ""),
                         position=i,
+                        content_type=content_type,
                     )
                 )
 
@@ -82,48 +137,68 @@ class YouTubeProvider(MediaProvider):
                     pass
 
         if not results:
-            # Direct construct fallback URL if scraping returned no items
             logger.warning("[YOUTUBE] No parsed results, creating search fallback result")
             return [
                 MediaResult(
                     url=search_url,
                     title=f"Поиск YouTube: {clean_q}",
                     position=0,
+                    content_type=content_type,
                 )
             ]
 
-        return rank_media_results(clean_q, results)
+        return rank_media_results(
+            query=clean_q,
+            items=results,
+            content_type=content_type,
+            query_title=query_title,
+            query_artist=query_artist,
+        )
 
     async def play(self, result: MediaResult) -> ActionResult:
-        """Open the YouTube video URL and verify playback."""
-        logger.info("[YOUTUBE] Playing: '%s' (%s)", result.title, result.url)
+        """Execute playback of the YouTube video inside persistent MediaSession and verify."""
+        logger.info("[YOUTUBE] Playing in MediaSession: '%s' (%s)", result.title, result.url)
 
-        # Open in default system browser for user listening
-        from tools.system_control import open_browser as sys_open_browser
-        import json
+        status = await self._session.play(url=result.url, title=result.title, platform="youtube")
 
-        browser_res_str = sys_open_browser(result.url)
-        try:
-            payload = json.loads(browser_res_str)
-            if not payload.get("success"):
-                return ActionResult(
-                    success=False,
-                    action="play_content",
-                    platform="youtube",
-                    query=result.title,
-                    url=result.url,
-                    stage="open_browser",
-                    reason=payload.get("error", "Failed to open browser"),
-                )
-        except Exception:
-            pass
+        if status.verification in {"verified", "playback_verified_audio_unknown"}:
+            return ActionResult(
+                success=True,
+                action="play_content",
+                platform="youtube",
+                query=result.title,
+                url=result.url,
+                title=result.title,
+                stage="playback",
+                verification=status.verification,
+                playback_status=status,
+                extra={"verification": status.verification},
+            )
 
+        if status.verification == "started":
+            return ActionResult(
+                success=True,
+                action="play_content",
+                platform="youtube",
+                query=result.title,
+                url=result.url,
+                title=result.title,
+                stage="started",
+                verification="not_available",
+                playback_status=status,
+                extra={"verification": "not_available"},
+            )
+
+        # Failed
         return ActionResult(
-            success=True,
+            success=False,
             action="play_content",
             platform="youtube",
             query=result.title,
             url=result.url,
             title=result.title,
-            stage="playback",
+            stage="failed",
+            reason=status.error or "Playback verification failed (element missing or blocked)",
+            verification="failed",
+            playback_status=status,
         )

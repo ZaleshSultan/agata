@@ -235,17 +235,30 @@ def close_target(target: str, kind: str = "browser", url: str = "") -> str:
 
 _MEDIA_VIRTUAL_KEYS = {
     "play_pause": 0xB3,
+    "pause": 0xB3,
+    "resume": 0xB3,
+    "play": 0xB3,
+    "stop": 0xB2,
     "next": 0xB0,
     "previous": 0xB1,
 }
 
 
 def control_media(action: str) -> str:
-    """Send one non-destructive global media key on Windows.
+    """Execute transport control through active MediaSession or fallback to Windows media key."""
+    # 1. Try browser media session first
+    try:
+        from media.session import get_media_session
+        session = get_media_session()
+        handled = session.dispatch_command_sync(action)
+        if handled:
+            logger.info("[MEDIA] action=%s media_backend=browser", action)
+            return _tool_result(True, action=action, backend="browser")
+    except Exception as exc:
+        logger.debug("[MEDIA] browser session dispatch exception: %s", exc)
 
-    This is deliberately limited to transport controls.  It does not add the
-    arbitrary command, mouse, or power controls found in E.V.
-    """
+    # 2. Fallback to Windows virtual media keys
+    logger.info("[MEDIA] action=%s media_backend=windows_fallback", action)
     key = _MEDIA_VIRTUAL_KEYS.get(action)
     if key is None:
         return _tool_result(False, error=f"Неподдерживаемая media-команда: {action}")
@@ -256,7 +269,7 @@ def control_media(action: str) -> str:
 
         ctypes.windll.user32.keybd_event(key, 0, 0, 0)
         ctypes.windll.user32.keybd_event(key, 0, 0x0002, 0)
-        return _tool_result(True, action=action)
+        return _tool_result(True, action=action, backend="windows_fallback")
     except Exception as exc:
         logger.error("[MEDIA] failed: %s", exc)
         return _tool_result(False, error=f"Не удалось отправить media-команду: {exc}")

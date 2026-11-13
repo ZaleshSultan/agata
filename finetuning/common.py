@@ -147,7 +147,12 @@ def generate(model, tokenizer, row, max_new_tokens=128):
     tokens = output[0, inputs["input_ids"].shape[1]:]
     text = tokenizer.decode(tokens, skip_special_tokens=True)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Diagnostic only: generation settings and returned text are unchanged.
+    ended_with_eos = bool(len(tokens) and int(tokens[-1]) == tokenizer.eos_token_id)
     return {"response": text, "generated_tokens": len(tokens),
+            "ended_with_eos": ended_with_eos,
+            "hit_token_limit": len(tokens) >= max_new_tokens and not ended_with_eos,
+            "finish_reason": "eos" if ended_with_eos else ("length" if len(tokens) >= max_new_tokens else "other"),
             "seconds": round(time.perf_counter() - start, 3)}
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import math
@@ -12,6 +13,18 @@ import traceback
 
 from common import (LAB, LabelPreservingCollator, NvidiaMonitor, encode_assistant_only,
                     file_hash, lab_path, load_model, read_config, read_jsonl, write_json)
+
+
+def trainable_state_hash(tensors):
+    """Stable ordered digest; canonical FP32 bytes avoid serialization metadata."""
+    digest = hashlib.sha256()
+    for name, tensor in sorted(tensors.items()):
+        value = tensor.detach().cpu().float().contiguous()
+        header = {"name": name, "shape": list(value.shape), "source_dtype": str(tensor.dtype),
+                  "canonical_dtype": "float32"}
+        digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
+        digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def parse_args():
@@ -138,6 +151,8 @@ def run(args, output, report):
                 raise RuntimeError("Trainer preparation changed the intended LoRA-only trainable parameters")
             before.clear()
             before.update({name: tensor.detach().cpu().clone() for name, tensor in trainable.items()})
+            report["initial_lora_sha256"] = trainable_state_hash(before)
+            report["initial_lora_hash_method"] = "sorted name/shape/source dtype plus canonical contiguous FP32 tensor bytes before optimizer updates"
 
     report["resumed_from"] = args.resume
     trainer = SFTTrainer(
@@ -178,6 +193,7 @@ def run(args, output, report):
         "precision": "bfloat16" if bf16 else "float16",
         "lora_update": {"changed_tensors": changed, "total_tensors": len(changes),
                         "maximum_absolute_delta": max(changes.values())},
+        "final_lora_sha256": trainable_state_hash(trainable),
         "cuda_peak_allocated_mib": round(torch.cuda.max_memory_allocated() / 2**20, 2),
         "cuda_peak_reserved_mib": round(torch.cuda.max_memory_reserved() / 2**20, 2),
         "adapter_reload_verified": False,

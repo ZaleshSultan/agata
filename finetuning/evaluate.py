@@ -122,7 +122,12 @@ def main():
         raise SystemExit(f"Report exists: {json_path}. Choose a new output stem.")
     model, tokenizer = load_model(config, adapter=args.adapter)
     training_report = None
+    active_adapters = []
     if args.adapter:
+        from peft import PeftModel
+        if not isinstance(model, PeftModel) or not model.active_adapters:
+            raise RuntimeError("Expected an active PEFT adapter in the freshly loaded benchmark model")
+        active_adapters = list(model.active_adapters)
         training_path = lab_path(args.adapter).resolve().parent / "training_report.json"
         if training_path.is_file():
             training_report = json.loads(training_path.read_text(encoding="utf-8"))
@@ -130,12 +135,13 @@ def main():
             training_report = {}
     max_new = args.max_new_tokens or config["evaluation"]["max_new_tokens"]
     report = {"status": "running", "base_model": config["model"], "adapter": args.adapter,
+              "adapter_reload_verified": bool(args.adapter), "active_adapters": active_adapters,
               "benchmark_sha256": file_hash(benchmark), "benchmark": str(benchmark),
               "generation": {"do_sample": False, "max_new_tokens": max_new, "enable_thinking": False},
               "limit": args.limit, "created_unix": time.time(), "results": []}
     for index, row in enumerate(rows, 1):
         generated = generate(model, tokenizer, row, max_new)
-        result = {key: row.get(key) for key in ("id", "category", "prompt", "reference", "metadata")}
+        result = {key: row.get(key) for key in ("id", "category", "family_id", "prompt", "reference", "metadata")}
         result.update(generated)
         result["source_kind"] = source_kind(row)
         result["actual_training_exposure"] = exposure(row, training_report)
@@ -152,6 +158,11 @@ def main():
         for kind in sorted({row["actual_training_exposure"] for row in report["results"]})}
     write_json(json_path, report)
     output.with_suffix(".md").write_text(markdown(report), encoding="utf-8")
+    if args.adapter and training_report and training_report.get("status") == "passed":
+        if lab_path(training_report["adapter"]).resolve() == lab_path(args.adapter).resolve():
+            training_report["adapter_reload_verified"] = True
+            training_report.setdefault("adapter_reload_evidence_files", []).append(str(json_path.resolve()))
+            write_json(training_path, training_report)
 
 
 if __name__ == "__main__":

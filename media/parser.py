@@ -182,7 +182,9 @@ def parse_content_query(text: str) -> ParsedContentQuery:
             )
 
     # 5. Default fallback: title = full clean query
-    clean_title = clean
+    stripped = re.sub(r"^(?:песн\w*|трек\w*|музык\w*|видео|клип\w*)\s+", "", clean, flags=re.IGNORECASE).strip()
+    norm = _normalize_title_phrase(stripped or clean)
+    clean_title = norm or clean
     search_query = clean_title
     return ParsedContentQuery(
         raw_query=text,
@@ -191,3 +193,4 @@ def parse_content_query(text: str) -> ParsedContentQuery:
         content_type=c_type,
         search_query=search_query,
     )
+

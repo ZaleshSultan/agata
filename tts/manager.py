@@ -104,11 +104,12 @@ class TTSManager:
 
     def __init__(self, engine: BaseTTSEngine | None = None) -> None:
         self._engine: BaseTTSEngine = engine or _create_default_engine()
-        self._queue: Queue[str | None] = Queue(maxsize=config.TTS_QUEUE_MAX_SIZE)
+        self._queue: Queue[Any] = Queue(maxsize=config.TTS_QUEUE_MAX_SIZE)
         self._worker: threading.Thread | None = None
         self._lock = threading.Lock()
         self._is_speaking: bool = False
         self._last_finish_time: float = 0.0
+        self._started: bool = False
         self._model_ready: bool = False
 
     @property
@@ -117,21 +118,24 @@ class TTSManager:
 
     def start(self) -> None:
         """Запустить фоновый воркер-поток."""
-        if self._started:
-            return
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="tts-worker",
-            daemon=True,
-        )
-        self._worker.start()
-        self._started = True
-        logger.info("[TTS] Worker запущен")
+        with self._lock:
+            if self._started:
+                return
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                name="tts-worker",
+                daemon=True,
+            )
+            self._worker.start()
+            self._started = True
+            logger.info("[TTS] Worker запущен")
 
     def stop(self) -> None:
         """Остановить воркер (дождаться завершения текущей фразы)."""
-        if not self._started:
-            return
+        with self._lock:
+            if not self._started:
+                return
+            self._started = False
 
         # Отправляем «яд» — воркер выйдет из цикла
         try:
@@ -141,9 +145,9 @@ class TTSManager:
 
         if self._worker is not None:
             self._worker.join(timeout=10.0)
+            self._worker = None
 
         self._engine.shutdown()
-        self._started = False
         logger.info("[TTS] Worker остановлен")
 
     def enqueue(self, text: str) -> None:
@@ -157,9 +161,13 @@ class TTSManager:
         if not clean_text:
             return
 
-        # Автозапуск при первом использовании
+        # Автозапуск при первом использовании (если ещё не запущен)
         if not self._started:
-            self.start()
+            try:
+                self.start()
+            except Exception as start_exc:
+                logger.error("[TTS] Ошибка автозапуска worker в enqueue: %s", start_exc)
+                return
 
         try:
             # Store tuple of (text, enqueue_timestamp)
@@ -172,6 +180,9 @@ class TTSManager:
             )
         except Full:
             logger.warning("[TTS QUEUE] Очередь переполнена, пропускаю: '%s'", clean_text[:60])
+        except Exception as q_exc:
+            logger.error("[TTS QUEUE] Ошибка добавления в очередь: %s", q_exc)
+
 
     def speak(self, text: str) -> None:
         """Совместимость: поставить текст в очередь и дождаться окончания."""

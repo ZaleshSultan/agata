@@ -40,6 +40,10 @@ def main() -> None:
 
     ensure_reminders_table()
     agent = Agent()
+    try:
+        tts.start()
+    except Exception as tts_start_exc:
+        logger.warning("[TTS] Предварительный запуск TTS завершился с предупреждением: %s", tts_start_exc)
 
     while True:
         try:
@@ -65,7 +69,11 @@ def main() -> None:
             print(f"\n{config.ASSISTANT_NAME}: {answer}\n")
 
             # Озвучивание через TTS (асинхронно, не блокирует цикл действий)
-            tts.enqueue(answer)
+            try:
+                tts.enqueue(answer)
+            except Exception as tts_exc:
+                logger.error("[TTS] Ошибка при постановке ответа в очередь TTS: %s", tts_exc)
+
             logger.info(
                 "[PERF] action_latency_ms=%.1fms total=%.3fs (tts enqueued asynchronously)",
                 agent_elapsed * 1000.0,

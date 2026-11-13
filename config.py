@@ -33,7 +33,7 @@ OSINT_PROVIDER: str = os.getenv("OSINT_PROVIDER", "")
 
 # ── Reusable browser / vision infrastructure ─────────────────────────────
 BROWSER_ENABLED: bool = _env_bool("BROWSER_ENABLED", True)
-BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", True)
+BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", False)
 BROWSER_TIMEOUT_MS: int = int(os.getenv("BROWSER_TIMEOUT_MS", "15000"))
 BROWSER_MAX_PAGES: int = int(os.getenv("BROWSER_MAX_PAGES", "4"))
 BROWSER_MAX_EXTRACT_CHARS: int = int(os.getenv("BROWSER_MAX_EXTRACT_CHARS", "5000"))

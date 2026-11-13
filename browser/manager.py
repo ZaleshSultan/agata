@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 import config
@@ -195,6 +196,9 @@ class BrowserManager:
 
 
 _shared_browser_manager: BrowserManager | None = None
+_browser_loop: asyncio.AbstractEventLoop | None = None
+_browser_thread: threading.Thread | None = None
+_loop_lock = threading.Lock()
 
 
 def get_browser_manager() -> BrowserManager:
@@ -203,4 +207,41 @@ def get_browser_manager() -> BrowserManager:
     if _shared_browser_manager is None:
         _shared_browser_manager = BrowserManager()
     return _shared_browser_manager
+
+
+def get_browser_loop() -> asyncio.AbstractEventLoop:
+    """Return a single persistent asyncio event loop running on a dedicated thread for Playwright."""
+    global _browser_loop, _browser_thread
+    with _loop_lock:
+        if _browser_loop is None or not _browser_loop.is_running():
+            ready_event = threading.Event()
+
+            def _run_loop():
+                nonlocal ready_event
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                global _browser_loop
+                _browser_loop = loop
+                ready_event.set()
+                loop.run_forever()
+
+            _browser_thread = threading.Thread(target=_run_loop, name="playwright-browser-loop", daemon=True)
+            _browser_thread.start()
+            ready_event.wait()
+        return _browser_loop
+
+
+def run_browser_coro(coro: Any, timeout: float = 45.0) -> Any:
+    """Execute an async coroutine on the dedicated persistent Playwright event loop."""
+    loop = get_browser_loop()
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if current_loop is loop:
+        return coro
+
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
 

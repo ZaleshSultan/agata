@@ -123,6 +123,7 @@ class MediaSession:
 
         # Execute playback via DOM API and click fallback
         self.status.play_requested = True
+        logger.info("[MEDIA SESSION] play requested")
         try:
             await page.evaluate(
                 """() => {
@@ -165,6 +166,7 @@ class MediaSession:
         if not dom_state:
             self.status.verification = "failed"
             self.status.error = "Failed to query video state"
+            logger.info("[MEDIA SESSION] verification: failed (state unavailable)")
             return
 
         is_paused = dom_state.get("paused", True)
@@ -184,6 +186,15 @@ class MediaSession:
                 self.status.verification = "verified"
         else:
             self.status.verification = "started"
+
+        logger.info(
+            "[MEDIA SESSION] playback started: playing=%s time=%.1fs/%.1fs muted=%s",
+            self.status.playing,
+            self.status.current_time,
+            self.status.duration,
+            self.status.muted,
+        )
+        logger.info("[MEDIA SESSION] verification: %s", self.status.verification)
 
     async def _execute_soundcloud_playback(self, page: Any) -> None:
         """Handle SoundCloud play button, wait for audio, and verify."""
@@ -205,6 +216,7 @@ class MediaSession:
             self.status.element_found = False
 
         self.status.play_requested = True
+        logger.info("[MEDIA SESSION] play requested")
         try:
             await page.evaluate(
                 """() => {
@@ -248,8 +260,14 @@ class MediaSession:
             self.status.duration = float(dom_state.get("duration", 0.0))
             self.status.muted = bool(dom_state.get("muted", False))
             self.status.verification = "verified" if is_playing else "started"
-        else:
-            self.status.verification = "started"
+
+        logger.info(
+            "[MEDIA SESSION] playback started: playing=%s time=%.1fs/%.1fs",
+            self.status.playing,
+            self.status.current_time,
+            self.status.duration,
+        )
+        logger.info("[MEDIA SESSION] verification: %s", self.status.verification)
 
     async def _execute_generic_playback(self, page: Any) -> None:
         """Generic HTML5 video/audio playback."""
@@ -465,17 +483,9 @@ class MediaSession:
                 return await self.previous()
             return False
 
+        from browser.manager import run_browser_coro
         try:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(asyncio.run, _run()).result()
-            else:
-                return asyncio.run(_run())
+            return bool(run_browser_coro(_run(), timeout=5.0))
         except Exception as exc:
             logger.debug("[MEDIA SESSION] dispatch_command_sync error: %s", exc)
             return False

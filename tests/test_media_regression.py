@@ -343,6 +343,51 @@ class MediaRegressionTests(unittest.TestCase):
 
     # ── 5. TTS CACHE & SINGLE INITIALIZATION ───────────────────────────────
 
+    def test_tts_manager_started_attribute_and_enqueue(self) -> None:
+        """Regression test for problem 1 & 2: ensure _started is defined and enqueue never raises AttributeError."""
+        from tts.manager import TTSManager
+        from tts.base import BaseTTSEngine
+
+        mock_engine = MagicMock(spec=BaseTTSEngine)
+        manager = TTSManager(engine=mock_engine)
+
+        # 1. Attribute MUST exist upon creation
+        self.assertTrue(hasattr(manager, "_started"), "TTSManager must define _started in __init__")
+        self.assertFalse(manager._started)
+
+        # 2. Direct enqueue without prior start() must not fail
+        try:
+            manager.enqueue("Telegram открыт.")
+        except AttributeError as exc:
+            self.fail(f"manager.enqueue raised AttributeError: {exc}")
+
+        # Auto-started
+        self.assertTrue(manager._started)
+
+        # 3. Multiple enqueue calls
+        manager.enqueue("Chrome открыт.")
+        manager.enqueue("Firefox открыт.")
+
+        # 4. Stop and shutdown
+        manager.stop()
+        self.assertFalse(manager._started)
+        mock_engine.shutdown.assert_called_once()
+
+    def test_tts_single_initialization_xtts(self) -> None:
+        """Ensure XTTS model is loaded at most once and reused."""
+        from tts.xtts_engine import XTTSEngine
+        engine = XTTSEngine()
+        with patch.object(engine, "_load_model") as mock_load:
+            # First warmup call
+            engine.warmup()
+            self.assertEqual(mock_load.call_count, 1)
+
+            # Mark loaded
+            engine._model_loaded = True
+            # Second warmup call must be a no-op
+            engine.warmup()
+            self.assertEqual(mock_load.call_count, 1)
+
     def test_tts_disk_and_ram_cache(self) -> None:
         """Verify persistent phrase caching in RAM and Disk for target phrases."""
         from tts.xtts_engine import XTTSEngine, _PHRASE_CACHE

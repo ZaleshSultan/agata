@@ -109,22 +109,12 @@ async def _async_play_content(query: str, platform: str = "youtube") -> ActionRe
 def play_content(query: str, platform: str = "youtube") -> str:
     """Synchronous entry point for the play_content tool.
 
-    Returns JSON string with execution results.
+    Executes on the dedicated persistent browser event loop to preserve Playwright context.
     """
     logger.info("[TOOL] play_content(query='%s', platform='%s')", query, platform)
+    from browser.manager import run_browser_coro
     try:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            # If called inside an existing running event loop
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                action_result = pool.submit(asyncio.run, _async_play_content(query, platform)).result()
-        else:
-            action_result = asyncio.run(_async_play_content(query, platform))
-
+        action_result = run_browser_coro(_async_play_content(query, platform), timeout=45.0)
         return json.dumps(action_result.as_dict(), ensure_ascii=False)
     except Exception as exc:
         logger.error("[TOOL] play_content error: %s", exc)

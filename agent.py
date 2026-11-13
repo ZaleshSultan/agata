@@ -202,7 +202,8 @@ class Agent:
                 app = _APP_DISPLAY_NAMES.get(raw_arg.lower(), raw_arg)
             return self._remember_turn(user_text, f"{app} закрыт."), tool_elapsed
         if action.tool_name == "open_browser":
-            return self._remember_turn(user_text, f"Открыла {action.arguments['url']} в браузере."), tool_elapsed
+            target_name = action.arguments.get("display_name") or action.arguments.get("url", "веб-страницу")
+            return self._remember_turn(user_text, f"Открыла {target_name} в браузере."), tool_elapsed
         if action.tool_name == "get_current_datetime":
             return self._remember_turn(user_text, result), tool_elapsed
         if action.tool_name == "control_volume":
@@ -217,10 +218,10 @@ class Agent:
                 "play_pause": "Воспроизведение переключено.",
                 "pause": "Поставила на паузу.",
                 "stop": "Остановила воспроизведение.",
-                "resume": "Продолжаю воспроизведение.",
-                "play": "Продолжаю воспроизведение.",
-                "next": "Переключила на следующий трек.",
-                "previous": "Переключила на предыдущий трек.",
+                "resume": "Продолжила.",
+                "play": "Продолжила.",
+                "next": "Следующий трек.",
+                "previous": "Предыдущий трек.",
             }
             act_key = action.arguments.get("action", "play_pause")
             return self._remember_turn(user_text, labels.get(act_key, "Готово.")), tool_elapsed
@@ -312,14 +313,9 @@ class Agent:
         started_at = perf_counter()
         router_started_at = perf_counter()
 
-        # Every route starts with the same best-effort memory lifecycle.  Routed
-        # actions may not use it for reasoning, but recall and failure isolation
-        # are intentional rather than accidental CHAT-only behaviour.
-        try:
-            memory_context = self.memory.prepare_context(user_text)
-        except Exception as exc:
-            logger.warning("[MEMORY] context preparation failed: %s", exc)
-            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
+        # ── Fast deterministic routers (NO memory retrieval, NO LLM) ──────
+        # These must execute before prepare_context() which calls Ollama
+        # embeddings (~4100ms). Fast routes complete in <20ms.
 
         # 1. MEDIA TRANSPORT (Highest priority — stop, pause, resume, next, prev)
         media_action = route_media(user_text)
@@ -356,7 +352,32 @@ class Agent:
             self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
-        # 5. WEB SEARCH (incl. weather)
+        # 5. CALCULATION
+        calculation = route_calculation(user_text)
+        if calculation is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", calculation.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # 6. DATETIME
+        datetime_action = route_datetime(user_text)
+        if datetime_action is not None:
+            router_elapsed = perf_counter() - router_started_at
+            logger.info("Fast router: %s", datetime_action.kind)
+            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
+            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
+            return answer
+
+        # ── Slow paths: memory retrieval needed for WEB_SEARCH and CHAT ───
+        try:
+            memory_context = self.memory.prepare_context(user_text)
+        except Exception as exc:
+            logger.warning("[MEMORY] context preparation failed: %s", exc)
+            memory_context = {"working_memory": "", "relevant_memories": "", "current_datetime": ""}
+
+        # 7. WEB SEARCH (incl. weather)
         web_action = route_web_intent(user_text)
         if web_action is not None:
             router_elapsed = perf_counter() - router_started_at
@@ -369,24 +390,6 @@ class Agent:
                 final_llm=synthesis_elapsed,
                 response=0.0,
             )
-            return answer
-
-        # 6. CALCULATION
-        calculation = route_calculation(user_text)
-        if calculation is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", calculation.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, calculation)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
-            return answer
-
-        # 7. DATETIME
-        datetime_action = route_datetime(user_text)
-        if datetime_action is not None:
-            router_elapsed = perf_counter() - router_started_at
-            logger.info("Fast router: %s", datetime_action.kind)
-            answer, tool_elapsed = self._run_routed_action(user_text, datetime_action)
-            self._log_perf(started_at, router=router_elapsed, classifier="SKIPPED", tool=tool_elapsed, response=0.0)
             return answer
 
         router_elapsed = perf_counter() - router_started_at

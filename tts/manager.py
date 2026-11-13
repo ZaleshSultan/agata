@@ -241,6 +241,24 @@ class TTSManager:
                 target_engine.warmup()
             self._model_ready = True
             logger.info("[TTS] Model pre-warmed, model_ready=True")
+
+            if getattr(config, "TTS_PHRASE_CACHE_ENABLED", True) and hasattr(target_engine, "precache_phrase"):
+                _PRECACHE_PHRASES = [
+                    "Поставила на паузу.",
+                    "Продолжила.",
+                    "Остановила воспроизведение.",
+                    "Следующий трек.",
+                    "Предыдущий трек.",
+                    "Готово.",
+                    "Telegram открыт.",
+                    "Chrome открыт.",
+                    "Google открыт.",
+                ]
+                for phrase in _PRECACHE_PHRASES:
+                    try:
+                        target_engine.precache_phrase(phrase)
+                    except Exception:
+                        pass
         except Exception as w_exc:
             logger.debug("[TTS] Pre-warm note: %s", w_exc)
             self._model_ready = True

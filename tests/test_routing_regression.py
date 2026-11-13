@@ -105,31 +105,31 @@ class RoutingRegressionTests(unittest.TestCase):
     # ── 2. MEDIA TRANSPORT ─────────────────────────────────────────────────
 
     def test_pause_without_llm(self) -> None:
-        """'пауза' / 'поставь на паузу' → MEDIA play_pause without LLM."""
+        """'пауза' / 'поставь на паузу' → MEDIA pause without LLM."""
         for cmd in ["пауза", "поставь на паузу", "на паузу"]:
             norm = normalize_stt(cmd)
             action = route_media(norm)
             self.assertIsNotNone(action, f"Failed to route '{cmd}'")
             assert action is not None
-            self.assertEqual(action.arguments["action"], "play_pause")
+            self.assertEqual(action.arguments["action"], "pause")
 
         with patch("agent.execute_tool", return_value=json.dumps({"success": True})):
             answer = self.agent.run("пауза")
-        self.assertIn("Воспроизведение переключено", answer)
+        self.assertIn("паузу", answer.lower())
         self.assertEqual(len(self.fake_llm.calls), 0)
 
     def test_resume_without_llm(self) -> None:
-        """'продолжи' / 'возобнови' → MEDIA play_pause without LLM."""
+        """'продолжи' / 'возобнови' → MEDIA resume without LLM."""
         for cmd in ["продолжи", "возобнови", "продолжить"]:
             norm = normalize_stt(cmd)
             action = route_media(norm)
             self.assertIsNotNone(action, f"Failed to route '{cmd}'")
             assert action is not None
-            self.assertEqual(action.arguments["action"], "play_pause")
+            self.assertEqual(action.arguments["action"], "resume")
 
         with patch("agent.execute_tool", return_value=json.dumps({"success": True})):
             answer = self.agent.run("продолжи")
-        self.assertIn("Воспроизведение переключено", answer)
+        self.assertIn("продолжила", answer.lower())
         self.assertEqual(len(self.fake_llm.calls), 0)
 
     def test_next_track_without_llm(self) -> None:
@@ -143,7 +143,7 @@ class RoutingRegressionTests(unittest.TestCase):
 
         with patch("agent.execute_tool", return_value=json.dumps({"success": True})):
             answer = self.agent.run("следующая песня")
-        self.assertIn("следующий трек", answer)
+        self.assertIn("следующий трек", answer.lower())
         self.assertEqual(len(self.fake_llm.calls), 0)
 
     def test_previous_track_without_llm(self) -> None:
@@ -157,7 +157,7 @@ class RoutingRegressionTests(unittest.TestCase):
 
         with patch("agent.execute_tool", return_value=json.dumps({"success": True})):
             answer = self.agent.run("предыдущая песня")
-        self.assertIn("предыдущий трек", answer)
+        self.assertIn("предыдущий трек", answer.lower())
         self.assertEqual(len(self.fake_llm.calls), 0)
 
     # ── 3. CONTENT PLAY (YouTube / SoundCloud) ─────────────────────────────
@@ -217,13 +217,13 @@ class RoutingRegressionTests(unittest.TestCase):
     # ── 5. FALSE POSITIVE GUARDS ───────────────────────────────────────────
 
     def test_false_positive_pause_not_content(self) -> None:
-        """'поставь на паузу' must be MEDIA play_pause, NOT content search."""
+        """'поставь на паузу' must be MEDIA pause, NOT content search."""
         action = route_content_play("поставь на паузу")
         self.assertIsNone(action)
         media_action = route_media("поставь на паузу")
         self.assertIsNotNone(media_action)
         assert media_action is not None
-        self.assertEqual(media_action.arguments["action"], "play_pause")
+        self.assertEqual(media_action.arguments["action"], "pause")
 
     def test_false_positive_diary_not_content(self) -> None:
         """'поставь запись в дневник' must NOT be content play."""

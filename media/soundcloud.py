@@ -95,15 +95,8 @@ class SoundCloudProvider(MediaProvider):
                     pass
 
         if not results:
-            logger.warning("[SOUNDCLOUD] No parsed results, creating search fallback result")
-            return [
-                MediaResult(
-                    url=search_url,
-                    title=f"Поиск SoundCloud: {clean_q}",
-                    position=0,
-                    content_type="music",
-                )
-            ]
+            logger.warning("[SOUNDCLOUD] No parsed results for query '%s'", clean_q)
+            return []
 
         return rank_media_results(
             query=clean_q,

@@ -197,7 +197,7 @@ class MediaSession:
         logger.info("[MEDIA SESSION] verification: %s", self.status.verification)
 
     async def _execute_soundcloud_playback(self, page: Any) -> None:
-        """Handle SoundCloud play button, wait for audio, and verify."""
+        """Handle SoundCloud play button, wait for audio, and verify real progression."""
         try:
             # Handle cookie consent banner if present
             await page.evaluate(
@@ -209,12 +209,14 @@ class MediaSession:
         except Exception:
             pass
 
+        # 1. Player/audio element check
         try:
             await page.wait_for_selector(".playControl, .playButton, button.sc-button-play, audio", timeout=8000)
             self.status.element_found = True
         except Exception:
             self.status.element_found = False
 
+        # 2. Playback requested
         self.status.play_requested = True
         logger.info("[MEDIA SESSION] play requested")
         try:
@@ -232,42 +234,69 @@ class MediaSession:
         except Exception as exc:
             logger.warning("[MEDIA SESSION] SoundCloud play error: %s", exc)
 
-        await asyncio.sleep(1.0)
-
-        dom_state = await page.evaluate(
+        # 3 & 4. Sample t0 and DOM state
+        t0_state = await page.evaluate(
             """() => {
                 const playBtn = document.querySelector('.playControl, .playButton');
                 const isPlayingClass = playBtn ? (playBtn.classList.contains('playing') || playBtn.getAttribute('title') === 'Pause') : false;
                 const audio = document.querySelector('audio');
                 const audioPaused = audio ? audio.paused : null;
-                const currentTime = audio ? audio.currentTime : 0;
-                const duration = audio ? audio.duration || 0 : 0;
-                const muted = audio ? audio.muted : false;
-                return {
-                    isPlayingClass,
-                    audioPaused,
-                    currentTime,
-                    duration,
-                    muted,
-                };
+                const currentTime = audio ? (audio.currentTime || 0) : 0;
+                const duration = audio ? (audio.duration || 0) : 0;
+                const muted = audio ? (audio.muted || false) : false;
+                return { isPlayingClass, audioPaused, currentTime, duration, muted };
             }"""
-        )
+        ) or {}
 
-        if dom_state:
-            is_playing = dom_state.get("isPlayingClass") or (dom_state.get("audioPaused") is False)
-            self.status.playing = bool(is_playing)
-            self.status.current_time = float(dom_state.get("currentTime", 0.0))
-            self.status.duration = float(dom_state.get("duration", 0.0))
-            self.status.muted = bool(dom_state.get("muted", False))
-            self.status.verification = "verified" if is_playing else "started"
+        t0 = float(t0_state.get("currentTime", 0.0))
+
+        # 5. Wait a short interval
+        await asyncio.sleep(1.2)
+
+        # 6. Sample t1 and DOM state
+        t1_state = await page.evaluate(
+            """() => {
+                const playBtn = document.querySelector('.playControl, .playButton');
+                const isPlayingClass = playBtn ? (playBtn.classList.contains('playing') || playBtn.getAttribute('title') === 'Pause') : false;
+                const audio = document.querySelector('audio');
+                const audioPaused = audio ? audio.paused : null;
+                const currentTime = audio ? (audio.currentTime || 0) : 0;
+                const duration = audio ? (audio.duration || 0) : 0;
+                const muted = audio ? (audio.muted || false) : false;
+                return { isPlayingClass, audioPaused, currentTime, duration, muted };
+            }"""
+        ) or {}
+
+        t1 = float(t1_state.get("currentTime", 0.0))
+        duration = float(t1_state.get("duration", 0.0))
+        muted = bool(t1_state.get("muted", False))
+        is_playing_dom = bool(t1_state.get("isPlayingClass") or (t1_state.get("audioPaused") is False))
+
+        self.status.current_time = t1
+        self.status.duration = duration
+        self.status.muted = muted
+
+        # 7. Verification: playback really moves if t1 > t0 or (t1 > 0.2 and is_playing_dom)
+        playback_advancing = (t1 > t0) or (t1 > 0.2 and is_playing_dom)
+
+        if playback_advancing and is_playing_dom:
+            self.status.playing = True
+            self.status.verification = "verified"
+        elif is_playing_dom:
+            self.status.playing = True
+            self.status.verification = "started"
+        else:
+            self.status.playing = False
+            self.status.verification = "started" if self.status.element_found else "failed"
 
         logger.info(
-            "[MEDIA SESSION] playback started: playing=%s time=%.1fs/%.1fs",
+            "[MEDIA SESSION] SoundCloud playback state: playing=%s time=%.2fs->%.2fs/%.1fs verification=%s",
             self.status.playing,
-            self.status.current_time,
+            t0,
+            t1,
             self.status.duration,
+            self.status.verification,
         )
-        logger.info("[MEDIA SESSION] verification: %s", self.status.verification)
 
     async def _execute_generic_playback(self, page: Any) -> None:
         """Generic HTML5 video/audio playback."""

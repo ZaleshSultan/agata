@@ -117,7 +117,7 @@ class MediaRegressionTests(unittest.TestCase):
 
             with patch("agent.execute_tool", return_value=json.dumps({"success": True, "action": "play_pause"})):
                 answer = self.agent.run(phrase)
-            self.assertTrue("Продолжаю" in answer or "переключено" in answer)
+            self.assertTrue(any(w in answer for w in ["Продолжаю", "Продолжила", "переключено"]))
 
     def test_next_previous_routing(self) -> None:
         """'следующая песня', 'предыдущий трек' route to next / previous."""

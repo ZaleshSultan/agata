@@ -121,7 +121,9 @@ class MemoryIntegrationTests(unittest.TestCase):
         agent = Agent(); memory = TrackingMemory(); agent.memory = memory
         with patch("agent.execute_tool", return_value='{"success": true, "application": "Chrome"}'):
             agent.run("Открой Chrome")
-        self.assertEqual(memory.prepare_calls, 1)
+        # Fast deterministic routes bypass slow memory retrieval (prepare_context) to eliminate latency,
+        # but still record the turn via extract().
+        self.assertEqual(memory.prepare_calls, 0)
         self.assertEqual(memory.extract_calls, 1)
 
     def test_memory_failures_do_not_prevent_response(self):

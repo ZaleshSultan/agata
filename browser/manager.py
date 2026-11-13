@@ -88,8 +88,46 @@ class BrowserManager:
                 await self.close()
                 raise BrowserUnavailableError(f"Browser failed to start: {exc}") from exc
 
+    def is_alive(self) -> bool:
+        """Check if the browser context is still usable."""
+        if self._context is None:
+            return False
+        try:
+            # Persistent contexts don't have a browser attribute in all cases
+            pages = self._context.pages
+            return True
+        except Exception:
+            return False
+
+    async def ensure_browser_alive(self) -> None:
+        """Recreate browser context if it crashed or was closed externally.
+
+        Called before any page acquisition to guarantee a working context.
+        """
+        if self.is_alive():
+            return
+
+        logger.warning("[BROWSER] Context is dead, reinitializing...")
+        # Clean up stale references
+        self._media_page = None
+        self._general_page = None
+        self._pages.clear()
+        self._context = None
+        self._browser = None
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+        # Restart
+        await self.start()
+        logger.info("[BROWSER] Context re-created successfully")
+
     async def get_media_page(self) -> Any:
         """Return the dedicated persistent page for media playback (YouTube/SoundCloud)."""
+        await self.ensure_browser_alive()
         await self.start()
         assert self._context is not None
         if self._media_page is not None and not self._media_page.is_closed():
@@ -116,6 +154,7 @@ class BrowserManager:
 
     async def get_general_page(self) -> Any:
         """Return the dedicated persistent page for general web browsing."""
+        await self.ensure_browser_alive()
         await self.start()
         assert self._context is not None
         if self._general_page is not None and not self._general_page.is_closed():

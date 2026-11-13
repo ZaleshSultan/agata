@@ -290,6 +290,53 @@ class XTTSEngine(BaseTTSEngine):
                 pass
 
 
+    def precache_phrase(self, text: str) -> bool:
+        """Pre-cache phrase to RAM and disk without playing audio."""
+        if not getattr(config, "TTS_PHRASE_CACHE_ENABLED", True):
+            return False
+        cache_key = " ".join(text.strip().casefold().split()).strip(" .,!?:;\"'")
+        if not cache_key:
+            return False
+        if cache_key in _PHRASE_CACHE:
+            return True
+
+        # Check disk cache
+        disk_path = _get_cache_path(cache_key)
+        if disk_path.exists():
+            try:
+                _PHRASE_CACHE[cache_key] = disk_path.read_bytes()
+                logger.info("[TTS CACHE] Preloaded '%s' from disk to RAM", text)
+                return True
+            except Exception:
+                pass
+
+        # Synthesize to file and save to cache if model is ready
+        if self._model_loaded and self._tts is not None and self._speaker_wav:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="agata_tts_precache_")
+            os.close(tmp_fd)
+            try:
+                self._tts.tts_to_file(
+                    text=text,
+                    file_path=tmp_path,
+                    speaker_wav=self._speaker_wav,
+                    language=config.TTS_LANGUAGE,
+                )
+                with open(tmp_path, "rb") as f:
+                    wav_data = f.read()
+                _PHRASE_CACHE[cache_key] = wav_data
+                disk_path.write_bytes(wav_data)
+                logger.info("[TTS CACHE] Pre-synthesized '%s' to RAM & Disk", text)
+                return True
+            except Exception as exc:
+                logger.debug("[TTS CACHE] Precache failed for '%s': %s", text, exc)
+                return False
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        return False
+
     @staticmethod
     def _play_wav_bytes(wav_bytes: bytes) -> None:
         """Воспроизвести WAV bytes из памяти напрямую."""

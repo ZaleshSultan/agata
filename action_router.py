@@ -156,21 +156,30 @@ _VOLUME_WORD_RE = re.compile(r"\b(?:громкость|звук|volume)\b", re.I
 _VOLUME_SET_RE = re.compile(r"^\s*(?:поставь|установи|выставь)\s+(?:на\s+)?\d{1,3}\s*(?:%|процент(?:а|ов)?)?\s*$", re.IGNORECASE)
 _PERCENT_RE = re.compile(r"\b(?P<number>\d{1,3})\s*(?:%|процент(?:а|ов)?)?\b", re.IGNORECASE)
 _MEDIA_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Bare pause/resume — highest priority, unambiguous
-    (re.compile(r"^\s*(?:пауза|на паузу|поставь на паузу)\s*[.!]?\s*$", re.IGNORECASE), "play_pause"),
-    (re.compile(r"^\s*(?:продолжи|возобнови|продолжить|возобновить)\s*[.!]?\s*$", re.IGNORECASE), "play_pause"),
-    # Inline pause/resume
-    (re.compile(r"\b(?:пауз\w*|приостанови|продолжи|возобнови)\b", re.IGNORECASE), "play_pause"),
+    # Bare pause
+    (re.compile(r"^\s*(?:пауза|на\s+паузу|поставь\s+на\s+паузу|приостанови|приостановить|приостановим)\s*[.!]?\s*$", re.IGNORECASE), "pause"),
+    # Bare resume
+    (re.compile(r"^\s*(?:продолжи|возобнови|продолжить|возобновить|продолжу|продолжим|продолжай|возобновлю|возобновим|(?:включи|запусти|играй)\s+(?:музык\w*|трек\w*|песн\w*|воспроизведени\w*))\s*[.!]?\s*$", re.IGNORECASE), "resume"),
+    # Bare stop
+    (re.compile(r"^\s*(?:стоп|останови|остановить|поставь\s+на\s+стоп|на\s+стоп|выключи)\s*[.!]?\s*$", re.IGNORECASE), "stop"),
+    # Inline pause
+    (re.compile(r"\b(?:пауз\w*|приостанови\w*|поставь\s+на\s+паузу)\b", re.IGNORECASE), "pause"),
+    # Inline resume
+    (re.compile(r"\b(?:возобнови\w*|продолжи\w*|продолжай\w*|(?:включи|запусти)\s+музык\w*)\b", re.IGNORECASE), "resume"),
     # Next/previous — allow bare "следующая" / "предыдущая" (with optional трек/песня)
     (re.compile(r"^\s*(?:следующ(?:ий|ая|ее))\s*(?:трек|песн\w*|композиц\w*)?\s*[.!]?\s*$", re.IGNORECASE), "next"),
     (re.compile(r"^\s*(?:предыдущ(?:ий|ая|ее))\s*(?:трек|песн\w*|композиц\w*)?\s*[.!]?\s*$", re.IGNORECASE), "previous"),
     (re.compile(r"\b(?:следующ(?:ий|ую)|переключи)\s+(?:трек|песн|композиц)", re.IGNORECASE), "next"),
     (re.compile(r"\b(?:предыдущ(?:ий|ую)|назад)\s+(?:трек|песн|композиц)", re.IGNORECASE), "previous"),
     (re.compile(r"\b(?:переключи)\s+(?:трек|песн|композиц)", re.IGNORECASE), "next"),
-    # Music transport
-    (re.compile(r"\b(?:останови|выключи|включи|запусти)\s+(?:музык|песн|трек|воспроизведени)", re.IGNORECASE), "play_pause"),
+    # Music transport stop
+    (re.compile(r"\b(?:останови|выключи)\s+(?:музык|песн|трек|воспроизведени)", re.IGNORECASE), "stop"),
+    # Explicit toggle only
+    (re.compile(r"\b(?:плей\s*пауза|play\s*pause|переключи\s+воспроизведение)\b", re.IGNORECASE), "play_pause"),
     # English variants
-    (re.compile(r"\b(?:pause|resume)\b|\b(?:play|stop|start)\s+(?:the\s+)?(?:music|song|track|playback)\b", re.IGNORECASE), "play_pause"),
+    (re.compile(r"^\s*pause\s*[.!]?\s*$", re.IGNORECASE), "pause"),
+    (re.compile(r"^\s*resume\s*[.!]?\s*$", re.IGNORECASE), "resume"),
+    (re.compile(r"^\s*stop\s*[.!]?\s*$", re.IGNORECASE), "stop"),
     (re.compile(r"\b(?:next|skip)\s+(?:song|track)\b", re.IGNORECASE), "next"),
     (re.compile(r"\b(?:previous|prev)\s+(?:song|track)\b", re.IGNORECASE), "previous"),
 )
@@ -262,7 +271,10 @@ def route_explicit_action(user_text: str) -> RoutedAction | None:
     url_match = _URL.fullmatch(target)
     if url_match:
         logger.info("[ROUTER] detected action=OPEN_BROWSER target='%s'", target)
-        return RoutedAction("OPEN_BROWSER", "open_browser", {"url": url_match.group("url")})
+        return RoutedAction("OPEN_BROWSER", "open_browser", {
+            "url": url_match.group("url"),
+            "display_name": target,
+        })
 
     # 2. Использование универсального слоя разрешения целей (target_resolver)
     from target_resolver import resolve_target
@@ -270,7 +282,10 @@ def route_explicit_action(user_text: str) -> RoutedAction | None:
     if resolved is not None:
         if resolved.kind == "browser":
             logger.info("[ROUTER] detected action=OPEN_BROWSER target='%s' url='%s'", target, resolved.target)
-            return RoutedAction("OPEN_BROWSER", "open_browser", {"url": resolved.target})
+            return RoutedAction("OPEN_BROWSER", "open_browser", {
+                "url": resolved.target,
+                "display_name": resolved.display_name,
+            })
         elif resolved.kind == "app":
             logger.info(
                 "[ROUTER] detected action=OPEN_APP target='%s' resolved_path='%s' source='%s'",
@@ -333,8 +348,7 @@ def route_media(user_text: str) -> RoutedAction | None:
     cmd = parse_media_command(user_text)
     if cmd is not None:
         logger.info("[ROUTER] transport action=%s query='%s'", cmd.action, user_text)
-        action_name = "play_pause" if cmd.action in {"pause", "resume"} else cmd.action
-        return RoutedAction("MEDIA", "control_media", {"action": action_name})
+        return RoutedAction("MEDIA", "control_media", {"action": cmd.action})
 
     normalized = " ".join(user_text.casefold().split())
     if not normalized:
@@ -376,21 +390,37 @@ def route_web_intent(user_text: str) -> RoutedAction | None:
 
 # ── Content play routing ─────────────────────────────────────────────────
 
-# Platform aliases extracted from user text ("в саундклауде", "на ютубе")
+# Platform aliases extracted from user text ("в саундклауде", "на ютубе", "в санклоуде")
 _PLATFORM_ALIASES: dict[str, str] = {
+    # YouTube
     "ютуб": "youtube",
     "ютубе": "youtube",
+    "ютюб": "youtube",
+    "ютюбе": "youtube",
     "youtube": "youtube",
+    "you tube": "youtube",
+    # SoundCloud
     "саундклауд": "soundcloud",
     "саундклауде": "soundcloud",
+    "саундклаудом": "soundcloud",
+    "саундклауда": "soundcloud",
+    "санклауд": "soundcloud",
+    "санклауде": "soundcloud",
+    "санклаудом": "soundcloud",
+    "санклауда": "soundcloud",
+    "саунд клауд": "soundcloud",
+    "саунд клауде": "soundcloud",
     "soundcloud": "soundcloud",
+    "sound cloud": "soundcloud",
+    # Spotify
     "спотифай": "spotify",
+    "спотифае": "spotify",
     "spotify": "spotify",
 }
 
-# Regex to detect platform suffix: "в саундклауде", "на ютубе", "в youtube"
+# Regex to detect platform suffix: "в саундклауде", "на ютубе", "в санклоуде"
 _PLATFORM_SUFFIX_RE = re.compile(
-    r"\s+(?:в|на|through|on|in)\s+(?P<platform>"
+    r"\s+(?:в|на|через|through|on|in)\s+(?P<platform>"
     + "|".join(re.escape(k) for k in sorted(_PLATFORM_ALIASES, key=len, reverse=True))
     + r")\s*[.!]?\s*$",
     re.IGNORECASE,
@@ -398,7 +428,13 @@ _PLATFORM_SUFFIX_RE = re.compile(
 
 # Content play verbs — commands that request playing specific content
 _CONTENT_PLAY_VERB = re.compile(
-    r"^\s*(?:поставь|послушай|послушать|включи|запусти|воспроизведи|воспроизвести|сыграй|проиграй)\s+",
+    r"^\s*(?:поставь|послушай|послушать|включи|вруби|запусти|воспроизведи|воспроизвести|сыграй|проиграй|открой|найди)\s+",
+    re.IGNORECASE,
+)
+
+# Media content nouns for distinguishing "открой лекцию" (content) from "открой telegram" (app)
+_MEDIA_CONTENT_NOUNS = re.compile(
+    r"\b(?:лекци\w*|курс\w*|урок\w*|семинар\w*|вебинар\w*|доклад\w*|песн\w*|трек\w*|музык\w*|клип\w*|видео\w*|подкаст\w*|концерт\w*|фильм\w*|кино|альбом\w*|сингл\w*)\b",
     re.IGNORECASE,
 )
 
@@ -441,7 +477,9 @@ def route_content_play(user_text: str) -> RoutedAction | None:
     - "поставь запись в дневник" → NOT content (diary)
     - "поставь музыку" → NOT content (bare media → media transport)
     - "поставь лекцию про нейробиологию" → CONTENT (YouTube default)
+    - "открой лекцию по нейробиологии" → CONTENT (lecture content)
     - "поставь Монополию в саундклауде" → CONTENT (SoundCloud explicit)
+    - "поставь After Dark в Санклауде" → CONTENT (SoundCloud explicit)
     """
     clean = _clean_command_for_routing(user_text)
     if not clean:
@@ -452,9 +490,16 @@ def route_content_play(user_text: str) -> RoutedAction | None:
     if not verb_match:
         return None
 
+    verb = verb_match.group(0).strip().lower()
     remainder = clean[verb_match.end():].strip().rstrip(" .,!?:;\"'")
     if not remainder:
         return None
+
+    # If verb is "открой" or "найди", only treat as content play if remainder contains media keywords or platform suffix
+    if verb in {"открой", "найди"}:
+        has_media = bool(_MEDIA_CONTENT_NOUNS.search(remainder) or _PLATFORM_SUFFIX_RE.search(remainder))
+        if not has_media:
+            return None
 
     # Exclude diary, timer, volume, pause commands
     if _CONTENT_PLAY_EXCLUSIONS.search(remainder):
@@ -483,3 +528,4 @@ def route_content_play(user_text: str) -> RoutedAction | None:
     logger.info("[ROUTER] command='%s'", user_text)
     logger.info("[ROUTER] action=PLAY_CONTENT query='%s' platform='%s'", query, platform)
     return RoutedAction("PLAY_CONTENT", "play_content", {"query": query, "platform": platform})
+

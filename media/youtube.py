@@ -137,15 +137,8 @@ class YouTubeProvider(MediaProvider):
                     pass
 
         if not results:
-            logger.warning("[YOUTUBE] No parsed results, creating search fallback result")
-            return [
-                MediaResult(
-                    url=search_url,
-                    title=f"Поиск YouTube: {clean_q}",
-                    position=0,
-                    content_type=content_type,
-                )
-            ]
+            logger.warning("[YOUTUBE] No parsed results for query '%s'", clean_q)
+            return []
 
         return rank_media_results(
             query=clean_q,
